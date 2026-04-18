@@ -85,6 +85,44 @@ function basenameAny(value) {
     .pop() || "project";
 }
 
+function getParentDir(currentPath) {
+  const parsed = path.parse(currentPath);
+
+  if (currentPath === parsed.root) {
+    return null;
+  }
+
+  return path.dirname(currentPath);
+}
+
+function hasGitMarker(dirPath) {
+  return fs.existsSync(path.join(dirPath, ".git"));
+}
+
+function resolveProjectRoot(startPath) {
+  if (!startPath) {
+    return process.cwd();
+  }
+
+  let currentPath = path.resolve(startPath);
+
+  if (!fs.existsSync(currentPath)) {
+    currentPath = path.dirname(currentPath);
+  } else if (!fs.statSync(currentPath).isDirectory()) {
+    currentPath = path.dirname(currentPath);
+  }
+
+  while (currentPath) {
+    if (hasGitMarker(currentPath)) {
+      return currentPath;
+    }
+
+    currentPath = getParentDir(currentPath);
+  }
+
+  return path.resolve(startPath);
+}
+
 function isWindowsAbsolutePath(filePath) {
   return WINDOWS_ABSOLUTE_PATH_PATTERN.test(filePath);
 }
@@ -519,8 +557,9 @@ function sendHeartbeat(params, target) {
 }
 
 function sendProjectHeartbeat(cwd, target) {
-  const heartbeatPath = toHeartbeatPath(cwd);
-  const project = basenameAny(cwd);
+  const projectRoot = resolveProjectRoot(cwd);
+  const heartbeatPath = toHeartbeatPath(projectRoot);
+  const project = basenameAny(projectRoot);
   return sendHeartbeat({
     entity: heartbeatPath,
     entityType: "app",
@@ -529,7 +568,8 @@ function sendProjectHeartbeat(cwd, target) {
 }
 
 function sendFileHeartbeats(files, cwd, target) {
-  const heartbeatProjectFolder = toHeartbeatPath(cwd);
+  const projectRoot = resolveProjectRoot(cwd);
+  const heartbeatProjectFolder = toHeartbeatPath(projectRoot);
   let sentCount = 0;
 
   for (const file of files) {
@@ -616,6 +656,7 @@ async function runHook(target) {
 
   const workspaceRoot = Array.isArray(payload.workspace_roots) ? payload.workspace_roots.find((root) => typeof root === "string" && root.length > 0) : null;
   const cwd = process.env.CURSOR_PROJECT_DIR || workspaceRoot || process.cwd();
+  const projectRoot = resolveProjectRoot(cwd);
   const transcriptFiles = extractFilesFromTranscript(payload.transcript_path, cwd);
   const extractedFiles = transcriptFiles.length > 0 ? transcriptFiles : extractFiles(text, cwd);
   const files = extractedFiles.filter((file) => {
@@ -636,7 +677,7 @@ async function runHook(target) {
   }
 
   if (target === "windows") {
-    logDebug(`file source=${transcriptFiles.length > 0 ? "transcript" : "message"} extracted files=${files.length}`, target);
+    logDebug(`project root=${projectRoot} file source=${transcriptFiles.length > 0 ? "transcript" : "message"} extracted files=${files.length}`, target);
     let sent = false;
 
     if (files.length > 0) {
@@ -652,7 +693,7 @@ async function runHook(target) {
     return;
   }
 
-  logDebug(`file source=${transcriptFiles.length > 0 ? "transcript" : "message"} extracted files=${files.length}`, target);
+  logDebug(`project root=${projectRoot} file source=${transcriptFiles.length > 0 ? "transcript" : "message"} extracted files=${files.length}`, target);
   let sent = false;
 
   if (files.length > 0) {
@@ -769,11 +810,13 @@ function status() {
 
 function test(target) {
   const cwd = target === "windows" ? "C:\\Users\\User\\projects\\cursor-agent-wakatime" : process.cwd();
+  const projectRoot = resolveProjectRoot(cwd);
   const result = sendProjectHeartbeat(cwd, target === "windows" ? "windows" : "wsl");
 
   console.log(JSON.stringify({
     ...result,
-    project: basenameAny(cwd),
+    project: basenameAny(projectRoot),
+    projectRoot: target === "windows" ? projectRoot : wslToUnc(projectRoot),
     cwd: target === "windows" ? cwd : wslToUnc(cwd),
   }, null, 2));
   process.exit(result && result.ok ? 0 : 1);
