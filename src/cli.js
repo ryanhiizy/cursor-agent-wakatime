@@ -230,6 +230,9 @@ function getPaths() {
     wakatimeCli,
     wakatimeConfig: `${windowsHome.win}\\.wakatime.cfg`,
     wakatimeLog: `${windowsHome.win}\\.wakatime\\wakatime.log`,
+    stateFile: process.platform === "win32"
+      ? path.win32.join(windowsHome.win, ".wakatime", "cursor-agent-wakatime.json")
+      : path.posix.join(windowsHome.wsl, ".wakatime", "cursor-agent-wakatime.json"),
     cursorWslHooks: path.posix.join(homeDir, ".cursor", "hooks.json"),
     cursorWslLog: path.posix.join(homeDir, ".cursor", "cursor-agent-wakatime.log"),
     cursorWindowsHooks,
@@ -246,6 +249,40 @@ function logDebug(message, target) {
 
 function writeHookResponse() {
   process.stdout.write("{}\n");
+}
+
+function readState() {
+  const { stateFile } = getPaths();
+
+  if (!fs.existsSync(stateFile)) {
+    return {};
+  }
+
+  try {
+    return JSON.parse(fs.readFileSync(stateFile, "utf8"));
+  } catch {
+    return {};
+  }
+}
+
+function writeState(state) {
+  const { stateFile } = getPaths();
+  ensureDir(path.dirname(stateFile));
+  fs.writeFileSync(stateFile, `${JSON.stringify(state, null, 2)}\n`);
+}
+
+function shouldSendHeartbeat(force = false) {
+  if (force) {
+    return true;
+  }
+
+  const state = readState();
+  const lastHeartbeatAt = state.lastHeartbeatAt || 0;
+  return Math.floor(Date.now() / 1000) - lastHeartbeatAt >= 60;
+}
+
+function updateLastHeartbeat() {
+  writeState({ lastHeartbeatAt: Math.floor(Date.now() / 1000) });
 }
 
 function sendHeartbeat(params, target) {
@@ -361,6 +398,12 @@ async function runHook(target) {
     return;
   }
 
+  if (!shouldSendHeartbeat()) {
+    logDebug("skipped heartbeat due to local rate limit", target);
+    writeHookResponse();
+    return;
+  }
+
   if (target === "windows") {
     const cwd = process.env.CURSOR_PROJECT_DIR || process.cwd();
     const files = extractFiles(text, cwd);
@@ -373,6 +416,7 @@ async function runHook(target) {
     }
 
     writeHookResponse();
+    updateLastHeartbeat();
     return;
   }
 
@@ -386,6 +430,7 @@ async function runHook(target) {
     sendProjectHeartbeat(cwd, target);
   }
 
+  updateLastHeartbeat();
   writeHookResponse();
 }
 
@@ -438,6 +483,28 @@ function install() {
   console.log(`Installed Cursor hooks at ${paths.cursorWslHooks} and ${paths.cursorWindowsHooks}`);
 }
 
+function uninstall() {
+  const paths = getPaths();
+  const wslBackup = `${paths.cursorWslHooks}.bak`;
+  const windowsBackup = `${paths.cursorWindowsHooks}.bak`;
+
+  if (fs.existsSync(wslBackup)) {
+    fs.copyFileSync(wslBackup, paths.cursorWslHooks);
+    fs.unlinkSync(wslBackup);
+  } else if (fs.existsSync(paths.cursorWslHooks)) {
+    fs.unlinkSync(paths.cursorWslHooks);
+  }
+
+  if (fs.existsSync(windowsBackup)) {
+    fs.copyFileSync(windowsBackup, paths.cursorWindowsHooks);
+    fs.unlinkSync(windowsBackup);
+  } else if (fs.existsSync(paths.cursorWindowsHooks)) {
+    fs.unlinkSync(paths.cursorWindowsHooks);
+  }
+
+  console.log(`Removed Cursor hook configs at ${paths.cursorWslHooks} and ${paths.cursorWindowsHooks}`);
+}
+
 function status() {
   const paths = getPaths();
   const wslConfig = readJson(paths.cursorWslHooks);
@@ -451,6 +518,7 @@ function status() {
     cursorWindowsHooks: paths.cursorWindowsHooks,
     cursorWslLog: paths.cursorWslLog,
     cursorWindowsLog: paths.cursorWindowsLog,
+    stateFile: paths.stateFile,
     wakatimeCli: paths.wakatimeCli,
     installedWslCommand: wslConfig?.hooks?.afterAgentResponse?.[0]?.command || null,
     installedWindowsCommand: windowsConfig?.hooks?.afterAgentResponse?.[0]?.command || null,
@@ -482,6 +550,9 @@ async function run(argv) {
     case "install":
       install();
       return;
+    case "uninstall":
+      uninstall();
+      return;
     case "status":
       status();
       return;
@@ -492,7 +563,7 @@ async function run(argv) {
       test("windows");
       return;
     default:
-      console.log("Usage: cursor-agent-wakatime <install|status|test-wsl|test-windows|hook-wsl|hook-windows>");
+      console.log("Usage: cursor-agent-wakatime <install|uninstall|status|test-wsl|test-windows|hook-wsl|hook-windows>");
   }
 }
 

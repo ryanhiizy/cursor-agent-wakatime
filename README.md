@@ -15,6 +15,7 @@ This package installs `afterAgentResponse` hooks for both the WSL Cursor profile
 
 ```bash
 node ./bin/cursor-agent-wakatime.js install
+node ./bin/cursor-agent-wakatime.js uninstall
 node ./bin/cursor-agent-wakatime.js status
 node ./bin/cursor-agent-wakatime.js test-wsl
 node ./bin/cursor-agent-wakatime.js test-windows
@@ -24,4 +25,6 @@ node ./bin/cursor-agent-wakatime.js test-windows
 
 - WSL heartbeats are sent with a `\\wsl.localhost\\...` entity path so the Windows WakaTime CLI attributes them to the same project tree you see in Cursor.
 - Heartbeats are sent with the plugin string `cursor/1.0.0 cursor-agent-wakatime/0.1.0`.
+- File paths are extracted from assistant output and sent as file heartbeats when possible.
+- A local state file keeps a 60-second heartbeat throttle outside the WakaTime CLI.
 - The hook always returns valid `{}` output, even when WakaTime is unavailable.
