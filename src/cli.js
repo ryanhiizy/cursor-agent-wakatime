@@ -6,6 +6,13 @@ const { spawnSync } = require("node:child_process");
 const VERSION = "0.1.0";
 const ROOT_DIR = path.resolve(__dirname, "..");
 const BIN_PATH = path.join(ROOT_DIR, "bin", "cursor-agent-wakatime.js");
+const READ_PATTERNS = [
+  /```\w*:([^\n`]+)/g,
+  /`([^`\s]+\.\w{1,6})`/g,
+  /["']([^"'\s]+\.\w{1,6})["']/g,
+  /(?:Read|List)\s+`?([^\s`\n]+\.\w{1,6})`?/gi,
+];
+const WRITE_PATTERN = /(?:Create|Created|Modify|Modified|Update|Updated|Write|Wrote|Edit|Edited|Delete|Deleted)\s+`?([^\s`\n]+\.\w{1,6})`?/gi;
 
 function ensureDir(dirPath) {
   fs.mkdirSync(dirPath, { recursive: true });
@@ -42,6 +49,38 @@ function basenameAny(value) {
     .split(/[\\/]/)
     .filter(Boolean)
     .pop() || "project";
+}
+
+function isValidFilePath(filePath) {
+  if (!filePath || filePath.length === 0) {
+    return false;
+  }
+
+  if (filePath.startsWith("http://") || filePath.startsWith("https://") || filePath.includes("://")) {
+    return false;
+  }
+
+  if (/[<>|?*]/.test(filePath)) {
+    return false;
+  }
+
+  const ext = path.extname(filePath).slice(1).toLowerCase();
+
+  if (!ext || ext.length > 6) {
+    return false;
+  }
+
+  return true;
+}
+
+function normalizePath(filePath, cwd) {
+  const cleaned = filePath.trim();
+
+  if (path.isAbsolute(cleaned)) {
+    return path.normalize(cleaned);
+  }
+
+  return path.normalize(path.join(cwd, cleaned));
 }
 
 function toWindowsWslPath(windowsPath) {
@@ -115,6 +154,53 @@ function wslToUnc(posixPath) {
   return `\\\\wsl.localhost\\${distro}${posixPath.replace(/\//g, "\\")}`;
 }
 
+function toHeartbeatPath(filePath) {
+  if (filePath.startsWith("/")) {
+    return wslToUnc(filePath);
+  }
+
+  return filePath;
+}
+
+function extractFiles(message, cwd) {
+  if (!message || message.length === 0) {
+    return [];
+  }
+
+  const fileMap = new Map();
+  WRITE_PATTERN.lastIndex = 0;
+
+  for (const match of message.matchAll(WRITE_PATTERN)) {
+    const filePath = match[1];
+
+    if (filePath && isValidFilePath(filePath)) {
+      const normalized = normalizePath(filePath, cwd);
+      fileMap.set(normalized, true);
+    }
+  }
+
+  for (const pattern of READ_PATTERNS) {
+    pattern.lastIndex = 0;
+
+    for (const match of message.matchAll(pattern)) {
+      const filePath = match[1];
+
+      if (filePath && isValidFilePath(filePath)) {
+        const normalized = normalizePath(filePath, cwd);
+
+        if (!fileMap.has(normalized)) {
+          fileMap.set(normalized, false);
+        }
+      }
+    }
+  }
+
+  return Array.from(fileMap.entries()).map(([filePath, isWrite]) => ({
+    path: filePath,
+    isWrite,
+  }));
+}
+
 function toUncRepoPath(posixPath) {
   return wslToUnc(posixPath);
 }
@@ -162,10 +248,8 @@ function writeHookResponse() {
   process.stdout.write("{}\n");
 }
 
-function sendHeartbeat(entityPath, target) {
+function sendHeartbeat(params, target) {
   const paths = getPaths();
-  const resolvedEntityPath = entityPath || process.cwd();
-  const project = basenameAny(resolvedEntityPath);
 
   if (!fs.existsSync(paths.wakatimeCli)) {
     logDebug(`missing wakatime cli at ${paths.wakatimeCli}`, target);
@@ -174,15 +258,13 @@ function sendHeartbeat(entityPath, target) {
 
   const args = [
     "--entity",
-    resolvedEntityPath,
+    params.entity,
     "--entity-type",
-    "app",
+    params.entityType,
     "--category",
-    "ai coding",
+    params.category || "ai coding",
     "--plugin",
     `cursor/1.0.0 cursor-agent-wakatime/${VERSION}`,
-    "--project",
-    project,
     "--config",
     paths.wakatimeConfig,
     "--log-file",
@@ -193,6 +275,18 @@ function sendHeartbeat(entityPath, target) {
     "30",
     "--sync-ai-disabled",
   ];
+
+  if (params.projectFolder) {
+    args.push("--project-folder", params.projectFolder);
+  }
+
+  if (params.project) {
+    args.push("--project", params.project);
+  }
+
+  if (params.isWrite) {
+    args.push("--write");
+  }
 
   const result = spawnSync(paths.wakatimeCli, args, {
     encoding: "utf8",
@@ -210,8 +304,33 @@ function sendHeartbeat(entityPath, target) {
     return { ok: false, reason: "non_zero_exit", status: result.status };
   }
 
-  logDebug(`heartbeat sent cwd=${resolvedEntityPath}`, target);
-  return { ok: true, project, cwd: resolvedEntityPath };
+  logDebug(`heartbeat sent entity=${params.entity}`, target);
+  return { ok: true, entity: params.entity };
+}
+
+function sendProjectHeartbeat(cwd, target) {
+  const heartbeatPath = toHeartbeatPath(cwd);
+  const project = basenameAny(cwd);
+  return sendHeartbeat({
+    entity: heartbeatPath,
+    entityType: "app",
+    project,
+  }, target);
+}
+
+function sendFileHeartbeats(files, cwd, target) {
+  const heartbeatProjectFolder = toHeartbeatPath(cwd);
+
+  for (const file of files) {
+    const heartbeatPath = toHeartbeatPath(file.path);
+    logDebug(`sending file heartbeat path=${heartbeatPath} isWrite=${file.isWrite}`, target);
+    sendHeartbeat({
+      entity: heartbeatPath,
+      entityType: "file",
+      projectFolder: heartbeatProjectFolder,
+      isWrite: file.isWrite,
+    }, target);
+  }
 }
 
 async function runHook(target) {
@@ -243,13 +362,30 @@ async function runHook(target) {
   }
 
   if (target === "windows") {
-    sendHeartbeat(process.env.CURSOR_PROJECT_DIR || process.cwd(), target);
+    const cwd = process.env.CURSOR_PROJECT_DIR || process.cwd();
+    const files = extractFiles(text, cwd);
+    logDebug(`extracted files=${files.length}`, target);
+
+    if (files.length > 0) {
+      sendFileHeartbeats(files, cwd, target);
+    } else {
+      sendProjectHeartbeat(cwd, target);
+    }
+
     writeHookResponse();
     return;
   }
 
   const cwd = process.env.CURSOR_PROJECT_DIR || process.cwd();
-  sendHeartbeat(wslToUnc(cwd), target);
+  const files = extractFiles(text, cwd);
+  logDebug(`extracted files=${files.length}`, target);
+
+  if (files.length > 0) {
+    sendFileHeartbeats(files, cwd, target);
+  } else {
+    sendProjectHeartbeat(cwd, target);
+  }
+
   writeHookResponse();
 }
 
@@ -322,12 +458,15 @@ function status() {
 }
 
 function test(target) {
-  const result = target === "windows"
-    ? sendHeartbeat("C:\\Users\\User\\projects\\cursor-agent-wakatime", "windows")
-    : sendHeartbeat(wslToUnc(process.cwd()), "wsl");
+  const cwd = target === "windows" ? "C:\\Users\\User\\projects\\cursor-agent-wakatime" : process.cwd();
+  const result = sendProjectHeartbeat(cwd, target === "windows" ? "windows" : "wsl");
 
-  console.log(JSON.stringify(result, null, 2));
-  process.exit(result.ok ? 0 : 1);
+  console.log(JSON.stringify({
+    ...result,
+    project: basenameAny(cwd),
+    cwd: target === "windows" ? cwd : wslToUnc(cwd),
+  }, null, 2));
+  process.exit(result && result.ok ? 0 : 1);
 }
 
 async function run(argv) {
