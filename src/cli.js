@@ -6,6 +6,7 @@ const { spawnSync } = require("node:child_process");
 const VERSION = "0.1.0";
 const ROOT_DIR = path.resolve(__dirname, "..");
 const BIN_PATH = path.join(ROOT_DIR, "bin", "cursor-agent-wakatime.js");
+const WINDOWS_ABSOLUTE_PATH_PATTERN = /^[A-Za-z]:[\\/]/;
 const READ_PATTERNS = [
   /```\w*:([^\n`]+)/g,
   /`([^`\s]+\.\w{1,6})`/g,
@@ -13,6 +14,10 @@ const READ_PATTERNS = [
   /(?:Read|List)\s+`?([^\s`\n]+\.\w{1,6})`?/gi,
 ];
 const WRITE_PATTERN = /(?:Create|Created|Modify|Modified|Update|Updated|Write|Wrote|Edit|Edited|Delete|Deleted)\s+`?([^\s`\n]+\.\w{1,6})`?/gi;
+
+function quotePosixShellArg(value) {
+  return `'${String(value).replace(/'/g, `'\\''`)}'`;
+}
 
 function ensureDir(dirPath) {
   fs.mkdirSync(dirPath, { recursive: true });
@@ -63,6 +68,10 @@ function basenameAny(value) {
     .pop() || "project";
 }
 
+function isWindowsAbsolutePath(filePath) {
+  return WINDOWS_ABSOLUTE_PATH_PATTERN.test(filePath);
+}
+
 function isValidFilePath(filePath) {
   if (!filePath || filePath.length === 0) {
     return false;
@@ -88,7 +97,7 @@ function isValidFilePath(filePath) {
 function normalizePath(filePath, cwd) {
   const cleaned = filePath.trim();
 
-  if (path.isAbsolute(cleaned)) {
+  if (path.isAbsolute(cleaned) || isWindowsAbsolutePath(cleaned)) {
     return path.normalize(cleaned);
   }
 
@@ -114,20 +123,7 @@ function findWindowsUserDir() {
     }
   }
 
-  const defaultDir = process.platform === "win32" ? "C:\\Users\\User" : "/mnt/c/Users/User";
-
-  if (fs.existsSync(defaultDir)) {
-    return {
-      win: "C:\\Users\\User",
-      wsl: toWindowsWslPath("C:\\Users\\User"),
-    };
-  }
-
-  if (process.platform === "win32") {
-    return null;
-  }
-
-  const usersRoot = "/mnt/c/Users";
+  const usersRoot = process.platform === "win32" ? "C:\\Users" : "/mnt/c/Users";
   const ignoredNames = new Set([
     "All Users",
     "Default",
@@ -141,18 +137,42 @@ function findWindowsUserDir() {
     return null;
   }
 
-  const match = fs
+  const candidates = fs
     .readdirSync(usersRoot, { withFileTypes: true })
     .filter((entry) => entry.isDirectory() && !ignoredNames.has(entry.name))
-    .sort((left, right) => left.name.localeCompare(right.name))[0];
+    .map((entry) => {
+      const win = process.platform === "win32"
+        ? path.win32.join(usersRoot, entry.name)
+        : `C:\\Users\\${entry.name}`;
+      const wsl = process.platform === "win32"
+        ? win
+        : path.posix.join("/mnt/c/Users", entry.name);
+      const profileRoot = process.platform === "win32" ? win : wsl;
+      const score = Number(fs.existsSync(process.platform === "win32"
+        ? path.win32.join(win, ".wakatime.cfg")
+        : path.posix.join(wsl, ".wakatime.cfg")))
+        + Number(fs.existsSync(process.platform === "win32"
+          ? path.win32.join(win, ".wakatime", "wakatime-cli-windows-amd64.exe")
+          : path.posix.join(wsl, ".wakatime", "wakatime-cli-windows-amd64.exe")))
+        + Number(entry.name.toLowerCase() === "user")
+        + Number(entry.name.toLowerCase() === String(process.env.USER || "").toLowerCase());
 
-  if (!match) {
+      return {
+        win,
+        wsl: process.platform === "win32" ? toWindowsWslPath(win) : wsl,
+        profileRoot,
+        score,
+      };
+    })
+    .sort((left, right) => right.score - left.score || left.profileRoot.localeCompare(right.profileRoot));
+
+  if (candidates.length === 0) {
     return null;
   }
 
   return {
-    win: `C:\\Users\\${match.name}`,
-    wsl: path.posix.join(usersRoot, match.name),
+    win: candidates[0].win,
+    wsl: candidates[0].wsl,
   };
 }
 
@@ -332,7 +352,6 @@ function sendHeartbeat(params, target) {
     "60",
     "--timeout",
     "30",
-    "--sync-ai-disabled",
   ];
 
   if (params.projectFolder) {
@@ -379,17 +398,24 @@ function sendProjectHeartbeat(cwd, target) {
 
 function sendFileHeartbeats(files, cwd, target) {
   const heartbeatProjectFolder = toHeartbeatPath(cwd);
+  let sentCount = 0;
 
   for (const file of files) {
     const heartbeatPath = toHeartbeatPath(file.path);
     logDebug(`sending file heartbeat path=${heartbeatPath} isWrite=${file.isWrite}`, target);
-    sendHeartbeat({
+    const result = sendHeartbeat({
       entity: heartbeatPath,
       entityType: "file",
       projectFolder: heartbeatProjectFolder,
       isWrite: file.isWrite,
     }, target);
+
+    if (result.ok) {
+      sentCount += 1;
+    }
   }
+
+  return sentCount > 0;
 }
 
 function buildSignature(files, cwd) {
@@ -405,7 +431,7 @@ function buildSignature(files, cwd) {
 
 function buildWslHookEntry() {
   return {
-    command: `node ${BIN_PATH} hook-wsl`,
+    command: `node ${quotePosixShellArg(BIN_PATH)} hook-wsl`,
     timeout: 30,
   };
 }
@@ -457,7 +483,15 @@ async function runHook(target) {
   }
 
   const cwd = process.env.CURSOR_PROJECT_DIR || process.cwd();
-  const files = extractFiles(text, cwd);
+  const files = extractFiles(text, cwd).filter((file) => {
+    const exists = fs.existsSync(file.path);
+
+    if (!exists) {
+      logDebug(`skipped missing extracted file path=${file.path}`, target);
+    }
+
+    return exists;
+  });
   const signature = buildSignature(files, cwd);
 
   if (!shouldSendHeartbeat(signature)) {
@@ -468,27 +502,33 @@ async function runHook(target) {
 
   if (target === "windows") {
     logDebug(`extracted files=${files.length}`, target);
+    let sent = false;
 
     if (files.length > 0) {
-      sendFileHeartbeats(files, cwd, target);
+      sent = sendFileHeartbeats(files, cwd, target);
     } else {
-      sendProjectHeartbeat(cwd, target);
+      sent = sendProjectHeartbeat(cwd, target).ok;
     }
 
     writeHookResponse();
-    updateLastHeartbeat(signature);
+    if (sent) {
+      updateLastHeartbeat(signature);
+    }
     return;
   }
 
   logDebug(`extracted files=${files.length}`, target);
+  let sent = false;
 
   if (files.length > 0) {
-    sendFileHeartbeats(files, cwd, target);
+    sent = sendFileHeartbeats(files, cwd, target);
   } else {
-    sendProjectHeartbeat(cwd, target);
+    sent = sendProjectHeartbeat(cwd, target).ok;
   }
 
-  updateLastHeartbeat(signature);
+  if (sent) {
+    updateLastHeartbeat(signature);
+  }
   writeHookResponse();
 }
 
