@@ -1,0 +1,20 @@
+{
+  "name": "cursor-agent-wakatime",
+  "version": "0.1.0",
+  "description": "WakaTime heartbeats for Cursor afterAgentResponse hooks.",
+  "bin": {
+    "cursor-agent-wakatime": "./bin/cursor-agent-wakatime.js"
+  },
+  "type": "commonjs",
+  "scripts": {
+    "install:local": "node ./bin/cursor-agent-wakatime.js install",
+    "status": "node ./bin/cursor-agent-wakatime.js status",
+    "test": "node ./bin/cursor-agent-wakatime.js test-wsl"
+  },
+  "keywords": [
+    "cursor",
+    "wakatime",
+    "hooks"
+  ],
+  "license": "MIT"
+}
