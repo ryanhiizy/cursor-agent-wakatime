@@ -31,6 +31,18 @@ function readJson(filePath) {
   return JSON.parse(fs.readFileSync(filePath, "utf8"));
 }
 
+function readJsonSafe(filePath) {
+  if (!fs.existsSync(filePath)) {
+    return null;
+  }
+
+  try {
+    return JSON.parse(fs.readFileSync(filePath, "utf8"));
+  } catch {
+    return null;
+  }
+}
+
 function readStdin() {
   return new Promise((resolve, reject) => {
     let data = "";
@@ -271,18 +283,28 @@ function writeState(state) {
   fs.writeFileSync(stateFile, `${JSON.stringify(state, null, 2)}\n`);
 }
 
-function shouldSendHeartbeat(force = false) {
+function shouldSendHeartbeat(signature, force = false) {
   if (force) {
     return true;
   }
 
   const state = readState();
   const lastHeartbeatAt = state.lastHeartbeatAt || 0;
-  return Math.floor(Date.now() / 1000) - lastHeartbeatAt >= 60;
+  const lastSignature = state.lastSignature || "";
+  const elapsed = Math.floor(Date.now() / 1000) - lastHeartbeatAt;
+
+  if (elapsed >= 60) {
+    return true;
+  }
+
+  return signature !== lastSignature;
 }
 
-function updateLastHeartbeat() {
-  writeState({ lastHeartbeatAt: Math.floor(Date.now() / 1000) });
+function updateLastHeartbeat(signature) {
+  writeState({
+    lastHeartbeatAt: Math.floor(Date.now() / 1000),
+    lastSignature: signature,
+  });
 }
 
 function sendHeartbeat(params, target) {
@@ -370,6 +392,42 @@ function sendFileHeartbeats(files, cwd, target) {
   }
 }
 
+function buildSignature(files, cwd) {
+  if (files.length === 0) {
+    return `app:${cwd}`;
+  }
+
+  return files
+    .map((file) => `${file.isWrite ? "w" : "r"}:${file.path}`)
+    .sort()
+    .join("|");
+}
+
+function buildWslHookEntry() {
+  return {
+    command: `node ${BIN_PATH} hook-wsl`,
+    timeout: 30,
+  };
+}
+
+function buildWindowsHookEntry() {
+  const windowsNode = "C:\\Program Files\\nodejs\\node.exe";
+  const uncBinPath = toUncRepoPath(BIN_PATH);
+
+  return {
+    command: `& "${windowsNode}" "${uncBinPath}" hook-windows`,
+    timeout: 30,
+  };
+}
+
+function isOurWslHookEntry(entry) {
+  return entry && typeof entry.command === "string" && entry.command.includes(`${BIN_PATH} hook-wsl`);
+}
+
+function isOurWindowsHookEntry(entry) {
+  return entry && typeof entry.command === "string" && entry.command.includes("cursor-agent-wakatime") && entry.command.includes("hook-windows");
+}
+
 async function runHook(target) {
   const rawInput = await readStdin();
   logDebug(`received input bytes=${rawInput.length}`, target);
@@ -398,15 +456,17 @@ async function runHook(target) {
     return;
   }
 
-  if (!shouldSendHeartbeat()) {
+  const cwd = process.env.CURSOR_PROJECT_DIR || process.cwd();
+  const files = extractFiles(text, cwd);
+  const signature = buildSignature(files, cwd);
+
+  if (!shouldSendHeartbeat(signature)) {
     logDebug("skipped heartbeat due to local rate limit", target);
     writeHookResponse();
     return;
   }
 
   if (target === "windows") {
-    const cwd = process.env.CURSOR_PROJECT_DIR || process.cwd();
-    const files = extractFiles(text, cwd);
     logDebug(`extracted files=${files.length}`, target);
 
     if (files.length > 0) {
@@ -416,12 +476,10 @@ async function runHook(target) {
     }
 
     writeHookResponse();
-    updateLastHeartbeat();
+    updateLastHeartbeat(signature);
     return;
   }
 
-  const cwd = process.env.CURSOR_PROJECT_DIR || process.cwd();
-  const files = extractFiles(text, cwd);
   logDebug(`extracted files=${files.length}`, target);
 
   if (files.length > 0) {
@@ -430,7 +488,7 @@ async function runHook(target) {
     sendProjectHeartbeat(cwd, target);
   }
 
-  updateLastHeartbeat();
+  updateLastHeartbeat(signature);
   writeHookResponse();
 }
 
@@ -439,27 +497,18 @@ function buildWslHookConfig() {
     version: 1,
     hooks: {
       afterAgentResponse: [
-        {
-          command: `node ${BIN_PATH} hook-wsl`,
-          timeout: 30,
-        },
+        buildWslHookEntry(),
       ],
     },
   };
 }
 
 function buildWindowsHookConfig() {
-  const windowsNode = "C:\\Program Files\\nodejs\\node.exe";
-  const uncBinPath = toUncRepoPath(BIN_PATH);
-
   return {
     version: 1,
     hooks: {
       afterAgentResponse: [
-        {
-          command: `& "${windowsNode}" "${uncBinPath}" hook-windows`,
-          timeout: 30,
-        },
+        buildWindowsHookEntry(),
       ],
     },
   };
@@ -467,8 +516,10 @@ function buildWindowsHookConfig() {
 
 function install() {
   const paths = getPaths();
-  const existingWsl = readJson(paths.cursorWslHooks);
-  const existingWindows = readJson(paths.cursorWindowsHooks);
+  const existingWsl = readJsonSafe(paths.cursorWslHooks);
+  const existingWindows = readJsonSafe(paths.cursorWindowsHooks);
+  const wslConfig = existingWsl || { version: 1, hooks: {} };
+  const windowsConfig = existingWindows || { version: 1, hooks: {} };
 
   if (existingWsl) {
     fs.writeFileSync(`${paths.cursorWslHooks}.bak`, `${JSON.stringify(existingWsl, null, 2)}\n`);
@@ -478,31 +529,47 @@ function install() {
     fs.writeFileSync(`${paths.cursorWindowsHooks}.bak`, `${JSON.stringify(existingWindows, null, 2)}\n`);
   }
 
-  writeJson(paths.cursorWslHooks, buildWslHookConfig());
-  writeJson(paths.cursorWindowsHooks, buildWindowsHookConfig());
+  const wslHooks = Array.isArray(wslConfig.hooks?.afterAgentResponse) ? wslConfig.hooks.afterAgentResponse.filter((entry) => !isOurWslHookEntry(entry)) : [];
+  const windowsHooks = Array.isArray(windowsConfig.hooks?.afterAgentResponse) ? windowsConfig.hooks.afterAgentResponse.filter((entry) => !isOurWindowsHookEntry(entry)) : [];
+
+  wslHooks.push(buildWslHookEntry());
+  windowsHooks.push(buildWindowsHookEntry());
+
+  wslConfig.version = 1;
+  wslConfig.hooks = {
+    ...(wslConfig.hooks || {}),
+    afterAgentResponse: wslHooks,
+  };
+
+  windowsConfig.version = 1;
+  windowsConfig.hooks = {
+    ...(windowsConfig.hooks || {}),
+    afterAgentResponse: windowsHooks,
+  };
+
+  writeJson(paths.cursorWslHooks, wslConfig);
+  writeJson(paths.cursorWindowsHooks, windowsConfig);
   console.log(`Installed Cursor hooks at ${paths.cursorWslHooks} and ${paths.cursorWindowsHooks}`);
 }
 
 function uninstall() {
   const paths = getPaths();
-  const wslBackup = `${paths.cursorWslHooks}.bak`;
-  const windowsBackup = `${paths.cursorWindowsHooks}.bak`;
+  const existingWsl = readJsonSafe(paths.cursorWslHooks);
+  const existingWindows = readJsonSafe(paths.cursorWindowsHooks);
 
-  if (fs.existsSync(wslBackup)) {
-    fs.copyFileSync(wslBackup, paths.cursorWslHooks);
-    fs.unlinkSync(wslBackup);
-  } else if (fs.existsSync(paths.cursorWslHooks)) {
-    fs.unlinkSync(paths.cursorWslHooks);
+  if (existingWsl?.hooks?.afterAgentResponse) {
+    const next = existingWsl.hooks.afterAgentResponse.filter((entry) => !isOurWslHookEntry(entry));
+    existingWsl.hooks.afterAgentResponse = next;
+    writeJson(paths.cursorWslHooks, existingWsl);
   }
 
-  if (fs.existsSync(windowsBackup)) {
-    fs.copyFileSync(windowsBackup, paths.cursorWindowsHooks);
-    fs.unlinkSync(windowsBackup);
-  } else if (fs.existsSync(paths.cursorWindowsHooks)) {
-    fs.unlinkSync(paths.cursorWindowsHooks);
+  if (existingWindows?.hooks?.afterAgentResponse) {
+    const next = existingWindows.hooks.afterAgentResponse.filter((entry) => !isOurWindowsHookEntry(entry));
+    existingWindows.hooks.afterAgentResponse = next;
+    writeJson(paths.cursorWindowsHooks, existingWindows);
   }
 
-  console.log(`Removed Cursor hook configs at ${paths.cursorWslHooks} and ${paths.cursorWindowsHooks}`);
+  console.log(`Removed Cursor hook entries from ${paths.cursorWslHooks} and ${paths.cursorWindowsHooks}`);
 }
 
 function status() {
