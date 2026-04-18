@@ -7,6 +7,23 @@ const VERSION = "0.1.0";
 const ROOT_DIR = path.resolve(__dirname, "..");
 const BIN_PATH = path.join(ROOT_DIR, "bin", "cursor-agent-wakatime.js");
 const WINDOWS_ABSOLUTE_PATH_PATTERN = /^[A-Za-z]:[\\/]/;
+const READ_TOOL_NAMES = new Set([
+  "Grep",
+  "Glob",
+  "LS",
+  "List",
+  "Read",
+  "Search",
+]);
+const WRITE_TOOL_NAMES = new Set([
+  "Create",
+  "Delete",
+  "Edit",
+  "MultiEdit",
+  "NotebookEdit",
+  "StrReplace",
+  "Write",
+]);
 const READ_PATTERNS = [
   /```\w*:([^\n`]+)/g,
   /`([^`\s]+\.\w{1,6})`/g,
@@ -223,6 +240,121 @@ function extractFiles(message, cwd) {
         if (!fileMap.has(normalized)) {
           fileMap.set(normalized, false);
         }
+      }
+    }
+  }
+
+  return Array.from(fileMap.entries()).map(([filePath, isWrite]) => ({
+    path: filePath,
+    isWrite,
+  }));
+}
+
+function mergeFileMapEntry(fileMap, filePath, isWrite, cwd) {
+  if (!filePath || !isValidFilePath(filePath)) {
+    return;
+  }
+
+  const normalized = normalizePath(String(filePath), cwd);
+  const previous = fileMap.get(normalized) || false;
+  fileMap.set(normalized, previous || isWrite);
+}
+
+function extractPathsFromToolInput(input) {
+  if (!input || typeof input !== "object") {
+    return [];
+  }
+
+  const values = [];
+
+  for (const key of ["path", "file_path", "filePath", "target_file", "new_file_path"]) {
+    if (typeof input[key] === "string" && input[key].length > 0) {
+      values.push(input[key]);
+    }
+  }
+
+  for (const key of ["paths", "files"]) {
+    if (Array.isArray(input[key])) {
+      for (const value of input[key]) {
+        if (typeof value === "string" && value.length > 0) {
+          values.push(value);
+        }
+      }
+    }
+  }
+
+  return values;
+}
+
+function readJsonLines(filePath) {
+  if (!filePath || !fs.existsSync(filePath)) {
+    return [];
+  }
+
+  return fs
+    .readFileSync(filePath, "utf8")
+    .split("\n")
+    .map((line) => line.trim())
+    .filter(Boolean)
+    .map((line) => {
+      try {
+        return JSON.parse(line);
+      } catch {
+        return null;
+      }
+    })
+    .filter(Boolean);
+}
+
+function getLatestAssistantTurnEntries(entries) {
+  const turnEntries = [];
+
+  for (let index = entries.length - 1; index >= 0; index -= 1) {
+    const entry = entries[index];
+
+    if (entry?.role === "user") {
+      break;
+    }
+
+    if (entry?.role === "assistant") {
+      turnEntries.unshift(entry);
+    }
+  }
+
+  return turnEntries;
+}
+
+function extractFilesFromTranscript(transcriptPath, cwd) {
+  const entries = readJsonLines(transcriptPath);
+
+  if (entries.length === 0) {
+    return [];
+  }
+
+  const fileMap = new Map();
+  const turnEntries = getLatestAssistantTurnEntries(entries);
+
+  for (const entry of turnEntries) {
+    const content = entry?.message?.content;
+
+    if (!Array.isArray(content)) {
+      continue;
+    }
+
+    for (const item of content) {
+      if (item?.type !== "tool_use") {
+        continue;
+      }
+
+      const toolName = String(item.name || "");
+      const isWrite = WRITE_TOOL_NAMES.has(toolName);
+
+      if (!isWrite && !READ_TOOL_NAMES.has(toolName)) {
+        continue;
+      }
+
+      for (const filePath of extractPathsFromToolInput(item.input)) {
+        mergeFileMapEntry(fileMap, filePath, isWrite, cwd);
       }
     }
   }
@@ -482,8 +614,11 @@ async function runHook(target) {
     return;
   }
 
-  const cwd = process.env.CURSOR_PROJECT_DIR || process.cwd();
-  const files = extractFiles(text, cwd).filter((file) => {
+  const workspaceRoot = Array.isArray(payload.workspace_roots) ? payload.workspace_roots.find((root) => typeof root === "string" && root.length > 0) : null;
+  const cwd = process.env.CURSOR_PROJECT_DIR || workspaceRoot || process.cwd();
+  const transcriptFiles = extractFilesFromTranscript(payload.transcript_path, cwd);
+  const extractedFiles = transcriptFiles.length > 0 ? transcriptFiles : extractFiles(text, cwd);
+  const files = extractedFiles.filter((file) => {
     const exists = fs.existsSync(file.path);
 
     if (!exists) {
@@ -501,7 +636,7 @@ async function runHook(target) {
   }
 
   if (target === "windows") {
-    logDebug(`extracted files=${files.length}`, target);
+    logDebug(`file source=${transcriptFiles.length > 0 ? "transcript" : "message"} extracted files=${files.length}`, target);
     let sent = false;
 
     if (files.length > 0) {
@@ -517,7 +652,7 @@ async function runHook(target) {
     return;
   }
 
-  logDebug(`extracted files=${files.length}`, target);
+  logDebug(`file source=${transcriptFiles.length > 0 ? "transcript" : "message"} extracted files=${files.length}`, target);
   let sent = false;
 
   if (files.length > 0) {
