@@ -2,8 +2,9 @@ const fs = require("node:fs");
 const os = require("node:os");
 const path = require("node:path");
 const { spawnSync } = require("node:child_process");
+const packageJson = require("../package.json");
 
-const VERSION = "0.1.0";
+const VERSION = packageJson.version;
 const ROOT_DIR = path.resolve(__dirname, "..");
 const BIN_PATH = path.join(ROOT_DIR, "bin", "cursor-agent-wakatime.js");
 const WINDOWS_ABSOLUTE_PATH_PATTERN = /^[A-Za-z]:[\\/]/;
@@ -283,11 +284,43 @@ function wslToUnc(posixPath) {
 }
 
 function toHeartbeatPath(filePath) {
-  if (filePath.startsWith("/")) {
+  if (isWsl() && filePath.startsWith("/")) {
     return wslToUnc(filePath);
   }
 
   return filePath;
+}
+
+function commandExists(command) {
+  const result = spawnSync(process.platform === "win32" ? "where" : "command", process.platform === "win32" ? [command] : ["-v", command], {
+    encoding: "utf8",
+    shell: process.platform !== "win32",
+    stdio: ["ignore", "pipe", "ignore"],
+    windowsHide: true,
+  });
+
+  return result.status === 0 && result.stdout.trim().length > 0;
+}
+
+function findNativeWakatimeCli(homeDir) {
+  if (process.env.WAKATIME_CLI_PATH) {
+    return process.env.WAKATIME_CLI_PATH;
+  }
+
+  const platformName = process.platform === "darwin" ? "darwin" : process.platform;
+  const archNames = process.arch === "x64" ? ["amd64", "x64"] : [process.arch];
+  const candidates = [
+    path.join(homeDir, ".wakatime", "wakatime-cli"),
+    ...archNames.map((arch) => path.join(homeDir, ".wakatime", `wakatime-cli-${platformName}-${arch}`)),
+  ];
+
+  const existing = candidates.find((candidate) => fs.existsSync(candidate));
+
+  if (existing) {
+    return existing;
+  }
+
+  return commandExists("wakatime-cli") ? "wakatime-cli" : candidates[0];
 }
 
 function extractFiles(message, cwd) {
@@ -452,8 +485,22 @@ function getPaths() {
   const windowsHome = findWindowsUserDir();
   const homeDir = process.env.HOME || os.homedir();
 
-  if (!windowsHome) {
+  if (!windowsHome && (process.platform === "win32" || isWsl())) {
     throw new Error("Unable to find the Windows user profile needed for WakaTime.");
+  }
+
+  if (!windowsHome) {
+    return {
+      windowsHome: null,
+      wakatimeCli: findNativeWakatimeCli(homeDir),
+      wakatimeConfig: path.join(homeDir, ".wakatime.cfg"),
+      wakatimeLog: path.join(homeDir, ".wakatime", "wakatime.log"),
+      stateFile: path.join(homeDir, ".wakatime", "cursor-agent-wakatime.json"),
+      cursorWslHooks: path.join(homeDir, ".cursor", "hooks.json"),
+      cursorWslLog: path.join(homeDir, ".cursor", "cursor-agent-wakatime.log"),
+      cursorWindowsHooks: null,
+      cursorWindowsLog: null,
+    };
   }
 
   const wakatimeCli = process.platform === "win32"
@@ -486,6 +533,9 @@ function getPaths() {
 function logDebug(message, target) {
   const paths = getPaths();
   const logPath = target === "windows" ? paths.cursorWindowsLog : paths.cursorWslLog;
+  if (!logPath) {
+    return;
+  }
   ensureDir(path.dirname(logPath));
   fs.appendFileSync(logPath, `[${new Date().toISOString()}] ${message}\n`);
 }
@@ -798,23 +848,20 @@ function buildWindowsHookConfig() {
 function install() {
   const paths = getPaths();
   const existingWsl = readJsonSafe(paths.cursorWslHooks);
-  const existingWindows = readJsonSafe(paths.cursorWindowsHooks);
+  const existingWindows = paths.cursorWindowsHooks ? readJsonSafe(paths.cursorWindowsHooks) : null;
   const wslConfig = existingWsl || { version: 1, hooks: {} };
-  const windowsConfig = existingWindows || { version: 1, hooks: {} };
+  const windowsConfig = paths.cursorWindowsHooks ? existingWindows || { version: 1, hooks: {} } : null;
 
   if (existingWsl) {
     fs.writeFileSync(`${paths.cursorWslHooks}.bak`, `${JSON.stringify(existingWsl, null, 2)}\n`);
   }
 
-  if (existingWindows) {
+  if (existingWindows && paths.cursorWindowsHooks) {
     fs.writeFileSync(`${paths.cursorWindowsHooks}.bak`, `${JSON.stringify(existingWindows, null, 2)}\n`);
   }
 
   const wslHooks = Array.isArray(wslConfig.hooks?.afterAgentResponse) ? wslConfig.hooks.afterAgentResponse.filter((entry) => !isOurWslHookEntry(entry)) : [];
-  const windowsHooks = Array.isArray(windowsConfig.hooks?.afterAgentResponse) ? windowsConfig.hooks.afterAgentResponse.filter((entry) => !isOurWindowsHookEntry(entry)) : [];
-
   wslHooks.push(buildWslHookEntry());
-  windowsHooks.push(buildWindowsHookEntry());
 
   wslConfig.version = 1;
   wslConfig.hooks = {
@@ -822,21 +869,30 @@ function install() {
     afterAgentResponse: wslHooks,
   };
 
-  windowsConfig.version = 1;
-  windowsConfig.hooks = {
-    ...(windowsConfig.hooks || {}),
-    afterAgentResponse: windowsHooks,
-  };
-
   writeJson(paths.cursorWslHooks, wslConfig);
-  writeJson(paths.cursorWindowsHooks, windowsConfig);
-  console.log(`Installed Cursor hooks at ${paths.cursorWslHooks} and ${paths.cursorWindowsHooks}`);
+
+  if (windowsConfig && paths.cursorWindowsHooks) {
+    const windowsHooks = Array.isArray(windowsConfig.hooks?.afterAgentResponse) ? windowsConfig.hooks.afterAgentResponse.filter((entry) => !isOurWindowsHookEntry(entry)) : [];
+    windowsHooks.push(buildWindowsHookEntry());
+
+    windowsConfig.version = 1;
+    windowsConfig.hooks = {
+      ...(windowsConfig.hooks || {}),
+      afterAgentResponse: windowsHooks,
+    };
+
+    writeJson(paths.cursorWindowsHooks, windowsConfig);
+    console.log(`Installed Cursor hooks at ${paths.cursorWslHooks} and ${paths.cursorWindowsHooks}`);
+    return;
+  }
+
+  console.log(`Installed Cursor hook at ${paths.cursorWslHooks}`);
 }
 
 function uninstall() {
   const paths = getPaths();
   const existingWsl = readJsonSafe(paths.cursorWslHooks);
-  const existingWindows = readJsonSafe(paths.cursorWindowsHooks);
+  const existingWindows = paths.cursorWindowsHooks ? readJsonSafe(paths.cursorWindowsHooks) : null;
 
   if (existingWsl?.hooks?.afterAgentResponse) {
     const next = existingWsl.hooks.afterAgentResponse.filter((entry) => !isOurWslHookEntry(entry));
@@ -844,19 +900,24 @@ function uninstall() {
     writeJson(paths.cursorWslHooks, existingWsl);
   }
 
-  if (existingWindows?.hooks?.afterAgentResponse) {
+  if (paths.cursorWindowsHooks && existingWindows?.hooks?.afterAgentResponse) {
     const next = existingWindows.hooks.afterAgentResponse.filter((entry) => !isOurWindowsHookEntry(entry));
     existingWindows.hooks.afterAgentResponse = next;
     writeJson(paths.cursorWindowsHooks, existingWindows);
   }
 
-  console.log(`Removed Cursor hook entries from ${paths.cursorWslHooks} and ${paths.cursorWindowsHooks}`);
+  if (paths.cursorWindowsHooks) {
+    console.log(`Removed Cursor hook entries from ${paths.cursorWslHooks} and ${paths.cursorWindowsHooks}`);
+    return;
+  }
+
+  console.log(`Removed Cursor hook entry from ${paths.cursorWslHooks}`);
 }
 
 function status() {
   const paths = getPaths();
   const wslConfig = readJson(paths.cursorWslHooks);
-  const windowsConfig = readJson(paths.cursorWindowsHooks);
+  const windowsConfig = paths.cursorWindowsHooks ? readJson(paths.cursorWindowsHooks) : null;
 
   console.log(JSON.stringify({
     version: VERSION,
@@ -874,6 +935,11 @@ function status() {
 }
 
 function test(target) {
+  if (target === "windows" && !findWindowsUserDir()) {
+    console.error("Windows Cursor/WakaTime paths are not available on this machine.");
+    process.exit(1);
+  }
+
   const cwd = target === "windows" ? "C:\\Users\\User\\projects\\cursor-agent-wakatime" : process.cwd();
   const projectRoot = resolveProjectRoot(cwd);
   const result = sendProjectHeartbeat(cwd, target === "windows" ? "windows" : "wsl");
@@ -881,8 +947,8 @@ function test(target) {
   console.log(JSON.stringify({
     ...result,
     project: basenameAny(projectRoot),
-    projectRoot: target === "windows" ? projectRoot : wslToUnc(projectRoot),
-    cwd: target === "windows" ? cwd : wslToUnc(cwd),
+    projectRoot: isWsl() && target !== "windows" ? wslToUnc(projectRoot) : projectRoot,
+    cwd: isWsl() && target !== "windows" ? wslToUnc(cwd) : cwd,
   }, null, 2));
   process.exit(result && result.ok ? 0 : 1);
 }
@@ -906,6 +972,9 @@ async function run(argv) {
     case "status":
       status();
       return;
+    case "test":
+      test("local");
+      return;
     case "test-wsl":
       test("wsl");
       return;
@@ -913,7 +982,7 @@ async function run(argv) {
       test("windows");
       return;
     default:
-      console.log("Usage: cursor-agent-wakatime <install|uninstall|status|test-wsl|test-windows|hook-wsl|hook-windows>");
+      console.log("Usage: cursor-agent-wakatime <install|uninstall|status|test|test-wsl|test-windows|hook-wsl|hook-windows>");
   }
 }
 

@@ -2,20 +2,45 @@
   "name": "cursor-agent-wakatime",
   "version": "0.1.0",
   "description": "WakaTime heartbeats for Cursor afterAgentResponse hooks.",
+  "main": "./src/cli.js",
   "bin": {
     "cursor-agent-wakatime": "./bin/cursor-agent-wakatime.js"
   },
   "type": "commonjs",
+  "files": [
+    "bin",
+    "src",
+    "README.md",
+    "LICENSE"
+  ],
   "scripts": {
+    "check": "node --check ./bin/cursor-agent-wakatime.js && node --check ./src/cli.js",
     "install:local": "node ./bin/cursor-agent-wakatime.js install",
     "uninstall:local": "node ./bin/cursor-agent-wakatime.js uninstall",
     "status": "node ./bin/cursor-agent-wakatime.js status",
-    "test": "node ./bin/cursor-agent-wakatime.js test-wsl"
+    "test": "node ./bin/cursor-agent-wakatime.js test",
+    "prepublishOnly": "npm run check && npm pack --dry-run"
   },
   "keywords": [
+    "ai",
     "cursor",
+    "cursor-agent",
     "wakatime",
     "hooks"
   ],
+  "engines": {
+    "node": ">=18"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/ryanhiizy/cursor-agent-wakatime.git"
+  },
+  "bugs": {
+    "url": "https://github.com/ryanhiizy/cursor-agent-wakatime/issues"
+  },
+  "homepage": "https://github.com/ryanhiizy/cursor-agent-wakatime#readme",
+  "publishConfig": {
+    "access": "public"
+  },
   "license": "MIT"
 }
