@@ -6,6 +6,79 @@ const test = require("node:test");
 
 const cli = require("../src/cli");
 
+test("runtime detection covers macos, linux, windows, and wsl", () => {
+  assert.equal(cli.detectRuntime({ platform: "darwin" }), "macos");
+  assert.equal(cli.detectRuntime({ platform: "linux", isWsl: false }), "linux");
+  assert.equal(cli.detectRuntime({ platform: "linux", isWsl: true }), "wsl");
+  assert.equal(cli.detectRuntime({ platform: "win32" }), "windows");
+});
+
+test("macos runtime uses native Cursor and WakaTime paths", () => {
+  const home = path.join(os.tmpdir(), "cursor-wakatime-mac-home");
+  const paths = cli.resolveRuntimePaths({
+    platform: "darwin",
+    homeDir: home,
+  });
+
+  assert.equal(paths.runtime, "macos");
+  assert.equal(paths.cursorHooks, path.join(home, ".cursor", "hooks.json"));
+  assert.equal(paths.cursorWindowsHooks, null);
+  assert.equal(paths.wakatimeCli, path.join(home, ".wakatime", "wakatime-cli"));
+  assert.equal(paths.wakatimeConfig, path.join(home, ".wakatime.cfg"));
+  assert.equal(cli.toHeartbeatPath("/Users/example/project/app.js", paths), "/Users/example/project/app.js");
+});
+
+test("native linux runtime uses native Cursor and WakaTime paths", () => {
+  const home = path.join(os.tmpdir(), "cursor-wakatime-linux-home");
+  const paths = cli.resolveRuntimePaths({
+    platform: "linux",
+    isWsl: false,
+    homeDir: home,
+  });
+
+  assert.equal(paths.runtime, "linux");
+  assert.equal(paths.cursorHooks, path.join(home, ".cursor", "hooks.json"));
+  assert.equal(paths.cursorWindowsHooks, null);
+  assert.equal(paths.wakatimeConfig, path.join(home, ".wakatime.cfg"));
+});
+
+test("wsl runtime keeps Windows WakaTime paths and installs both Cursor hook files", () => {
+  const home = path.join(os.tmpdir(), "cursor-wakatime-wsl-home");
+  const paths = cli.resolveRuntimePaths({
+    platform: "linux",
+    isWsl: true,
+    homeDir: home,
+    windowsHome: {
+      win: "C:\\Users\\User",
+      wsl: "/mnt/c/Users/User",
+    },
+    distro: "Ubuntu",
+  });
+
+  assert.equal(paths.runtime, "wsl");
+  assert.equal(paths.cursorHooks, path.join(home, ".cursor", "hooks.json"));
+  assert.equal(paths.cursorWindowsHooks, "/mnt/c/Users/User/.cursor/hooks.json");
+  assert.equal(paths.wakatimeCli, "/mnt/c/Users/User/.wakatime/wakatime-cli-windows-amd64.exe");
+  assert.equal(paths.wakatimeConfig, "C:\\Users\\User\\.wakatime.cfg");
+  assert.equal(cli.toHeartbeatPath("/home/user/project/app.js", paths), "\\\\wsl.localhost\\Ubuntu\\home\\user\\project\\app.js");
+});
+
+test("windows runtime uses native Windows paths and hook shape", () => {
+  const paths = cli.resolveRuntimePaths({
+    platform: "win32",
+    windowsHome: {
+      win: "C:\\Users\\User",
+      wsl: "/mnt/c/Users/User",
+    },
+  });
+
+  assert.equal(paths.runtime, "windows");
+  assert.equal(paths.cursorHooks, "C:\\Users\\User\\.cursor\\hooks.json");
+  assert.equal(paths.cursorWindowsHooks, null);
+  assert.equal(paths.wakatimeCli, "C:\\Users\\User\\.wakatime\\wakatime-cli-windows-amd64.exe");
+  assert.equal(paths.wakatimeConfig, "C:\\Users\\User\\.wakatime.cfg");
+});
+
 test("hook matching replaces old installs from different package paths", () => {
   assert.equal(cli.isOurWslHookEntry({
     command: "node '/tmp/local/cursor-agent-wakatime/bin/cursor-agent-wakatime.js' hook-wsl",
@@ -21,12 +94,21 @@ test("hook matching replaces old installs from different package paths", () => {
   }), false);
 });
 
-test("getPaths accepts WAKATIME_CLI_PATH override", () => {
+test("wsl runtime accepts WAKATIME_CLI_PATH override", () => {
   const previous = process.env.WAKATIME_CLI_PATH;
   process.env.WAKATIME_CLI_PATH = "/custom/wakatime-cli";
 
   try {
-    assert.equal(cli.getPaths().wakatimeCli, "/custom/wakatime-cli");
+    const paths = cli.resolveRuntimePaths({
+      platform: "linux",
+      isWsl: true,
+      windowsHome: {
+        win: "C:\\Users\\User",
+        wsl: "/mnt/c/Users/User",
+      },
+    });
+
+    assert.equal(paths.wakatimeCli, "/custom/wakatime-cli");
   } finally {
     if (previous === undefined) {
       delete process.env.WAKATIME_CLI_PATH;
@@ -34,6 +116,13 @@ test("getPaths accepts WAKATIME_CLI_PATH override", () => {
       process.env.WAKATIME_CLI_PATH = previous;
     }
   }
+});
+
+test("parseOptions keeps command flags out of positional arguments", () => {
+  const options = cli.parseOptions(["--skip-checks", "extra"]);
+
+  assert.equal(options.skipChecks, true);
+  assert.deepEqual(options.rest, ["extra"]);
 });
 
 test("filterTrackableFiles keeps only existing files inside the project", () => {

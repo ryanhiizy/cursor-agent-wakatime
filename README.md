@@ -49,6 +49,7 @@ Install keeps existing hooks from other tools, replaces any previous `cursor-age
 | `cursor-agent-wakatime install` | Add Cursor `afterAgentResponse` hooks. |
 | `cursor-agent-wakatime uninstall` | Remove only this package's Cursor hook entries. |
 | `cursor-agent-wakatime status` | Print hook, log, state, WakaTime CLI, and installed command paths. |
+| `cursor-agent-wakatime doctor` | Check that WakaTime CLI/config paths are available. |
 | `cursor-agent-wakatime test` | Send one project heartbeat for the current directory. |
 | `cursor-agent-wakatime test-wsl` | Compatibility alias for WSL installs. |
 | `cursor-agent-wakatime test-windows` | Send one test heartbeat through the Windows hook path when available. |
