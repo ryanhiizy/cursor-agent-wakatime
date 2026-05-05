@@ -18,8 +18,9 @@
     "install:local": "node ./bin/cursor-agent-wakatime.js install",
     "uninstall:local": "node ./bin/cursor-agent-wakatime.js uninstall",
     "status": "node ./bin/cursor-agent-wakatime.js status",
-    "test": "node ./bin/cursor-agent-wakatime.js test",
-    "prepublishOnly": "npm run check && npm pack --dry-run"
+    "test": "node --test",
+    "test:heartbeat": "node ./bin/cursor-agent-wakatime.js test",
+    "prepublishOnly": "npm run check && npm test && npm pack --dry-run"
   },
   "keywords": [
     "ai",

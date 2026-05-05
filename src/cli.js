@@ -7,6 +7,7 @@ const packageJson = require("../package.json");
 const VERSION = packageJson.version;
 const ROOT_DIR = path.resolve(__dirname, "..");
 const BIN_PATH = path.join(ROOT_DIR, "bin", "cursor-agent-wakatime.js");
+const HOOK_COMMAND_MARKER = "cursor-agent-wakatime";
 const WINDOWS_ABSOLUTE_PATH_PATTERN = /^[A-Za-z]:[\\/]/;
 const READ_TOOL_NAMES = new Set([
   "Grep",
@@ -199,6 +200,36 @@ function normalizePath(filePath, cwd) {
     : path.normalize(path.join(cwd, cleaned));
 
   return canonicalizeGitWorktreePath(candidatePath, resolveProjectRootRaw(candidatePath));
+}
+
+function isInsideDir(filePath, dirPath) {
+  const relativePath = path.relative(dirPath, filePath);
+  return relativePath === "" || (!relativePath.startsWith("..") && !path.isAbsolute(relativePath));
+}
+
+function filterTrackableFiles(files, cwd, logger = () => {}) {
+  const projectRoot = resolveProjectRoot(cwd);
+
+  return files.filter((file) => {
+    if (!fs.existsSync(file.path)) {
+      logger(`skipped missing extracted file path=${file.path}`);
+      return false;
+    }
+
+    const stats = fs.statSync(file.path);
+
+    if (!stats.isFile()) {
+      logger(`skipped non-file extracted path=${file.path}`);
+      return false;
+    }
+
+    if (!isInsideDir(file.path, projectRoot)) {
+      logger(`skipped extracted file outside project path=${file.path}`);
+      return false;
+    }
+
+    return true;
+  });
 }
 
 function toWindowsWslPath(windowsPath) {
@@ -503,7 +534,7 @@ function getPaths() {
     };
   }
 
-  const wakatimeCli = process.platform === "win32"
+  const defaultWakatimeCli = process.platform === "win32"
     ? path.win32.join(windowsHome.win, ".wakatime", "wakatime-cli-windows-amd64.exe")
     : path.posix.join(windowsHome.wsl, ".wakatime", "wakatime-cli-windows-amd64.exe");
 
@@ -517,7 +548,7 @@ function getPaths() {
 
   return {
     windowsHome,
-    wakatimeCli,
+    wakatimeCli: process.env.WAKATIME_CLI_PATH || defaultWakatimeCli,
     wakatimeConfig: `${windowsHome.win}\\.wakatime.cfg`,
     wakatimeLog: `${windowsHome.win}\\.wakatime\\wakatime.log`,
     stateFile: process.platform === "win32"
@@ -734,11 +765,17 @@ function buildWindowsHookEntry() {
 }
 
 function isOurWslHookEntry(entry) {
-  return entry && typeof entry.command === "string" && entry.command.includes(`${BIN_PATH} hook-wsl`);
+  return entry
+    && typeof entry.command === "string"
+    && entry.command.includes(HOOK_COMMAND_MARKER)
+    && entry.command.includes("hook-wsl");
 }
 
 function isOurWindowsHookEntry(entry) {
-  return entry && typeof entry.command === "string" && entry.command.includes("cursor-agent-wakatime") && entry.command.includes("hook-windows");
+  return entry
+    && typeof entry.command === "string"
+    && entry.command.includes(HOOK_COMMAND_MARKER)
+    && entry.command.includes("hook-windows");
 }
 
 async function runHook(target) {
@@ -774,15 +811,7 @@ async function runHook(target) {
   const projectRoot = resolveProjectRoot(cwd);
   const transcriptFiles = extractFilesFromTranscript(payload.transcript_path, cwd);
   const extractedFiles = transcriptFiles.length > 0 ? transcriptFiles : extractFiles(text, cwd);
-  const files = extractedFiles.filter((file) => {
-    const exists = fs.existsSync(file.path);
-
-    if (!exists) {
-      logDebug(`skipped missing extracted file path=${file.path}`, target);
-    }
-
-    return exists;
-  });
+  const files = filterTrackableFiles(extractedFiles, cwd, (message) => logDebug(message, target));
   const signature = buildSignature(files, cwd);
 
   if (!shouldSendHeartbeat(signature)) {
@@ -988,4 +1017,8 @@ async function run(argv) {
 
 module.exports = {
   run,
+  getPaths,
+  filterTrackableFiles,
+  isOurWslHookEntry,
+  isOurWindowsHookEntry,
 };
