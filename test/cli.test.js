@@ -63,6 +63,10 @@ test("wsl runtime keeps Windows WakaTime paths and installs both Cursor hook fil
   assert.equal(cli.toHeartbeatPath("/home/user/project/app.js", paths), "\\\\wsl.localhost\\Ubuntu\\home\\user\\project\\app.js");
 });
 
+test("wsl setup checks read Windows config through the mounted host path", () => {
+  assert.equal(cli.toReadableHostPath("C:\\Users\\User\\.wakatime.cfg"), "/mnt/c/Users/User/.wakatime.cfg");
+});
+
 test("windows runtime uses native Windows paths and hook shape", () => {
   const paths = cli.resolveRuntimePaths({
     platform: "win32",
