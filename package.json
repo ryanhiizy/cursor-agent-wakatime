@@ -4,7 +4,7 @@
   "description": "WakaTime heartbeats for Cursor afterAgentResponse hooks.",
   "main": "./src/cli.js",
   "bin": {
-    "cursor-agent-wakatime": "./bin/cursor-agent-wakatime.js"
+    "cursor-agent-wakatime": "bin/cursor-agent-wakatime.js"
   },
   "type": "commonjs",
   "files": [
