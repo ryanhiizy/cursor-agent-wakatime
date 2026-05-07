@@ -14,12 +14,6 @@ WakaTime heartbeats for Cursor Agent.
 
 > All Cursor Agent activity is tracked. When there is no detected file edit, WakaTime may show that activity as project-level `Other` time.
 
-## File Attribution
-
-`afterFileEdit` and `postToolUse` hooks only collect edited files from structured file path fields on Cursor hook payloads. The `afterAgentResponse` hook sends the heartbeat at the end of the response using the files remembered for that turn.
-
-This intentionally ignores broad assistant text scraping, shell command output, package-manager side effects, formatters, generated files, and files created by external tools. Those cases still count as Cursor Agent activity, but they are attributed to the project instead of a large guessed file list.
-
 ## Prerequisites
 
 - Node.js 18 or newer.
@@ -44,12 +38,6 @@ cursor-agent-wakatime install
 ```
 
 Restart Cursor after installing or changing hooks.
-
-If the installer cannot validate paths but `status` or `test` shows WakaTime is working, you can install without validation:
-
-```bash
-cursor-agent-wakatime install --skip-checks
-```
 
 ### Existing Hooks
 
