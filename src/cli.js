@@ -9,14 +9,8 @@ const ROOT_DIR = path.resolve(__dirname, "..");
 const BIN_PATH = path.join(ROOT_DIR, "bin", "cursor-agent-wakatime.js");
 const HOOK_COMMAND_MARKER = "cursor-agent-wakatime";
 const WINDOWS_ABSOLUTE_PATH_PATTERN = /^[A-Za-z]:[\\/]/;
-const READ_TOOL_NAMES = new Set([
-  "Grep",
-  "Glob",
-  "LS",
-  "List",
-  "Read",
-  "Search",
-]);
+const MAX_FILE_HEARTBEATS_PER_HOOK = 20;
+const MAX_TRACKED_TURNS = 100;
 const WRITE_TOOL_NAMES = new Set([
   "Create",
   "Delete",
@@ -26,13 +20,34 @@ const WRITE_TOOL_NAMES = new Set([
   "StrReplace",
   "Write",
 ]);
-const READ_PATTERNS = [
-  /```\w*:([^\n`]+)/g,
-  /`([^`\s]+\.\w{1,6})`/g,
-  /["']([^"'\s]+\.\w{1,6})["']/g,
-  /(?:Read|List)\s+`?([^\s`\n]+\.\w{1,6})`?/gi,
-];
-const WRITE_PATTERN = /(?:Create|Created|Modify|Modified|Update|Updated|Write|Wrote|Edit|Edited|Delete|Deleted)\s+`?([^\s`\n]+\.\w{1,6})`?/gi;
+const WRITE_TOOL_NAME_ALIASES = new Set([
+  ...Array.from(WRITE_TOOL_NAMES, (name) => name.toLowerCase()),
+  "edit_file",
+  "multi_edit",
+  "notebook_edit",
+  "str_replace",
+  "write_file",
+  "delete_file",
+]);
+const KNOWN_EXTENSIONLESS_FILENAMES = new Set([
+  ".dockerignore",
+  ".env",
+  ".eslintignore",
+  ".eslintrc",
+  ".gitattributes",
+  ".gitignore",
+  ".npmrc",
+  ".nvmrc",
+  ".prettierignore",
+  ".prettierrc",
+  "dockerfile",
+  "gemfile",
+  "justfile",
+  "license",
+  "makefile",
+  "procfile",
+  "readme",
+]);
 
 function quotePosixShellArg(value) {
   return `'${String(value).replace(/'/g, `'\\''`)}'`;
@@ -170,22 +185,41 @@ function isWindowsAbsolutePath(filePath) {
   return WINDOWS_ABSOLUTE_PATH_PATTERN.test(filePath);
 }
 
+function cleanupExtractedPath(filePath) {
+  let cleaned = String(filePath || "").trim();
+
+  if (cleaned.startsWith("<") && cleaned.endsWith(">")) {
+    cleaned = cleaned.slice(1, -1).trim();
+  }
+
+  return cleaned
+    .replace(/:\d+(?::\d+)?$/, "")
+    .replace(/[),.;]+$/, "");
+}
+
 function isValidFilePath(filePath) {
-  if (!filePath || filePath.length === 0) {
+  const cleaned = cleanupExtractedPath(filePath);
+
+  if (!cleaned || cleaned.length === 0) {
     return false;
   }
 
-  if (filePath.startsWith("http://") || filePath.startsWith("https://") || filePath.includes("://")) {
+  if (cleaned.startsWith("http://") || cleaned.startsWith("https://") || cleaned.includes("://")) {
     return false;
   }
 
-  if (/[<>|?*]/.test(filePath)) {
+  if (/[<>"'`|?*\[\]]/.test(cleaned)) {
     return false;
   }
 
-  const ext = path.extname(filePath).slice(1).toLowerCase();
+  const ext = path.extname(cleaned).slice(1).toLowerCase();
+  const basename = basenameAny(cleaned).toLowerCase();
 
-  if (!ext || ext.length > 6) {
+  if (!ext && !/[\\/]/.test(cleaned) && !KNOWN_EXTENSIONLESS_FILENAMES.has(basename)) {
+    return false;
+  }
+
+  if (ext && (ext.length > 6 || /^\d+$/.test(ext))) {
     return false;
   }
 
@@ -193,7 +227,7 @@ function isValidFilePath(filePath) {
 }
 
 function normalizePath(filePath, cwd) {
-  const cleaned = filePath.trim();
+  const cleaned = cleanupExtractedPath(filePath);
 
   if (isWindowsAbsolutePath(cleaned) && process.platform !== "win32") {
     return path.normalize(cleaned);
@@ -398,45 +432,6 @@ function findNativeWakatimeCli(homeDir, options = {}) {
   return commandExists("wakatime-cli") ? "wakatime-cli" : candidates[0];
 }
 
-function extractFiles(message, cwd) {
-  if (!message || message.length === 0) {
-    return [];
-  }
-
-  const fileMap = new Map();
-  WRITE_PATTERN.lastIndex = 0;
-
-  for (const match of message.matchAll(WRITE_PATTERN)) {
-    const filePath = match[1];
-
-    if (filePath && isValidFilePath(filePath)) {
-      const normalized = normalizePath(filePath, cwd);
-      fileMap.set(normalized, true);
-    }
-  }
-
-  for (const pattern of READ_PATTERNS) {
-    pattern.lastIndex = 0;
-
-    for (const match of message.matchAll(pattern)) {
-      const filePath = match[1];
-
-      if (filePath && isValidFilePath(filePath)) {
-        const normalized = normalizePath(filePath, cwd);
-
-        if (!fileMap.has(normalized)) {
-          fileMap.set(normalized, false);
-        }
-      }
-    }
-  }
-
-  return Array.from(fileMap.entries()).map(([filePath, isWrite]) => ({
-    path: filePath,
-    isWrite,
-  }));
-}
-
 function mergeFileMapEntry(fileMap, filePath, isWrite, cwd) {
   if (!filePath || !isValidFilePath(filePath)) {
     return;
@@ -454,7 +449,19 @@ function extractPathsFromToolInput(input) {
 
   const values = [];
 
-  for (const key of ["path", "file_path", "filePath", "target_file", "new_file_path"]) {
+  for (const key of [
+    "file",
+    "file_path",
+    "filePath",
+    "new_file_path",
+    "newFilePath",
+    "old_file_path",
+    "oldFilePath",
+    "path",
+    "target_file",
+    "targetFile",
+    "uri",
+  ]) {
     if (typeof input[key] === "string" && input[key].length > 0) {
       values.push(input[key]);
     }
@@ -473,83 +480,45 @@ function extractPathsFromToolInput(input) {
   return values;
 }
 
-function readJsonLines(filePath) {
-  if (!filePath || !fs.existsSync(filePath)) {
-    return [];
-  }
-
-  return fs
-    .readFileSync(filePath, "utf8")
-    .split("\n")
-    .map((line) => line.trim())
-    .filter(Boolean)
-    .map((line) => {
-      try {
-        return JSON.parse(line);
-      } catch {
-        return null;
-      }
-    })
-    .filter(Boolean);
+function isWriteToolName(toolName) {
+  return WRITE_TOOL_NAME_ALIASES.has(String(toolName || "").toLowerCase());
 }
 
-function getLatestAssistantTurnEntries(entries) {
-  const turnEntries = [];
-
-  for (let index = entries.length - 1; index >= 0; index -= 1) {
-    const entry = entries[index];
-
-    if (entry?.role === "user") {
-      break;
-    }
-
-    if (entry?.role === "assistant") {
-      turnEntries.unshift(entry);
-    }
-  }
-
-  return turnEntries;
-}
-
-function extractFilesFromTranscript(transcriptPath, cwd) {
-  const entries = readJsonLines(transcriptPath);
-
-  if (entries.length === 0) {
-    return [];
-  }
-
+function filesFromPathValues(values, cwd) {
   const fileMap = new Map();
-  const turnEntries = getLatestAssistantTurnEntries(entries);
 
-  for (const entry of turnEntries) {
-    const content = entry?.message?.content;
-
-    if (!Array.isArray(content)) {
-      continue;
-    }
-
-    for (const item of content) {
-      if (item?.type !== "tool_use") {
-        continue;
-      }
-
-      const toolName = String(item.name || "");
-      const isWrite = WRITE_TOOL_NAMES.has(toolName);
-
-      if (!isWrite && !READ_TOOL_NAMES.has(toolName)) {
-        continue;
-      }
-
-      for (const filePath of extractPathsFromToolInput(item.input)) {
-        mergeFileMapEntry(fileMap, filePath, isWrite, cwd);
-      }
-    }
+  for (const filePath of values) {
+    mergeFileMapEntry(fileMap, filePath, true, cwd);
   }
 
   return Array.from(fileMap.entries()).map(([filePath, isWrite]) => ({
     path: filePath,
     isWrite,
   }));
+}
+
+function extractEditedFilesFromHookPayload(payload, cwd) {
+  const eventName = String(payload?.hook_event_name || "").toLowerCase();
+
+  if (eventName === "afterfileedit") {
+    return filesFromPathValues(extractPathsFromToolInput(payload), cwd);
+  }
+
+  if (eventName !== "posttooluse") {
+    return [];
+  }
+
+  const toolName = payload.tool_name || payload.toolName || payload.name;
+
+  if (!isWriteToolName(toolName)) {
+    return [];
+  }
+
+  return filesFromPathValues([
+    ...extractPathsFromToolInput(payload.tool_input),
+    ...extractPathsFromToolInput(payload.toolInput),
+    ...extractPathsFromToolInput(payload.input),
+  ], cwd);
 }
 
 function toUncRepoPath(posixPath) {
@@ -708,8 +677,99 @@ function shouldSendHeartbeat(signature, force = false) {
 
 function updateLastHeartbeat(signature) {
   writeState({
+    ...readState(),
     lastHeartbeatAt: Math.floor(Date.now() / 1000),
     lastSignature: signature,
+  });
+}
+
+function getTurnStateKeys(payload, cwd) {
+  const conversationId = payload?.conversation_id || payload?.conversationId || payload?.session_id || payload?.sessionId;
+  const generationId = payload?.generation_id || payload?.generationId || payload?.request_id || payload?.requestId;
+  const keys = [];
+
+  if (conversationId && generationId) {
+    keys.push(`${conversationId}:${generationId}`);
+  }
+
+  if (conversationId) {
+    keys.push(`${conversationId}:latest`);
+  }
+
+  if (generationId) {
+    keys.push(`generation:${generationId}`);
+  }
+
+  keys.push(`cwd:${cwd}`);
+  return Array.from(new Set(keys));
+}
+
+function mergeFiles(existingFiles, newFiles) {
+  const fileMap = new Map();
+
+  for (const file of [...existingFiles, ...newFiles]) {
+    if (file?.path) {
+      fileMap.set(file.path, {
+        path: file.path,
+        isWrite: Boolean(file.isWrite),
+      });
+    }
+  }
+
+  return Array.from(fileMap.values());
+}
+
+function rememberTurnFiles(payload, files, cwd) {
+  if (files.length === 0) {
+    return;
+  }
+
+  const state = readState();
+  const turnFiles = state.turnFiles && typeof state.turnFiles === "object" ? state.turnFiles : {};
+  const updatedAt = Math.floor(Date.now() / 1000);
+
+  for (const turnKey of getTurnStateKeys(payload, cwd)) {
+    const existing = Array.isArray(turnFiles[turnKey]?.files) ? turnFiles[turnKey].files : [];
+    turnFiles[turnKey] = {
+      updatedAt,
+      files: mergeFiles(existing, files),
+    };
+  }
+
+  const pruned = Object.fromEntries(Object.entries(turnFiles)
+    .sort(([, left], [, right]) => (right.updatedAt || 0) - (left.updatedAt || 0))
+    .slice(0, MAX_TRACKED_TURNS));
+
+  writeState({
+    ...state,
+    turnFiles: pruned,
+  });
+}
+
+function readTurnFiles(payload, cwd) {
+  const state = readState();
+  const turnFiles = state.turnFiles && typeof state.turnFiles === "object" ? state.turnFiles : {};
+  return mergeFiles([], getTurnStateKeys(payload, cwd).flatMap((turnKey) => (
+    Array.isArray(turnFiles[turnKey]?.files) ? turnFiles[turnKey].files : []
+  )));
+}
+
+function clearTurnFiles(payload, cwd) {
+  const state = readState();
+
+  if (!state.turnFiles || typeof state.turnFiles !== "object") {
+    return;
+  }
+
+  const turnFiles = { ...state.turnFiles };
+
+  for (const turnKey of getTurnStateKeys(payload, cwd)) {
+    delete turnFiles[turnKey];
+  }
+
+  writeState({
+    ...state,
+    turnFiles,
   });
 }
 
@@ -810,9 +870,14 @@ function sendProjectHeartbeat(cwd, target) {
 function sendFileHeartbeats(files, cwd, target) {
   const projectRoot = resolveProjectRoot(cwd);
   const heartbeatProjectFolder = toHeartbeatPath(projectRoot);
+  const filesToSend = files.slice(0, MAX_FILE_HEARTBEATS_PER_HOOK);
   let sentCount = 0;
 
-  for (const file of files) {
+  if (files.length > filesToSend.length) {
+    logDebug(`limiting file heartbeats sent=${filesToSend.length} tracked=${files.length}`, target);
+  }
+
+  for (const file of filesToSend) {
     const heartbeatPath = toHeartbeatPath(file.path);
     logDebug(`sending file heartbeat path=${heartbeatPath} isWrite=${file.isWrite}`, target);
     const result = sendHeartbeat({
@@ -872,6 +937,10 @@ function isOurWindowsHookEntry(entry) {
     && entry.command.includes("hook-windows");
 }
 
+function removeOurHookEntries(entries = [], matcher) {
+  return Array.isArray(entries) ? entries.filter((entry) => !matcher(entry)) : [];
+}
+
 function parseOptions(args) {
   const options = {
     rest: [],
@@ -908,30 +977,41 @@ async function runHook(target) {
     return;
   }
 
-  const text = payload.text;
+  const workspaceRoot = Array.isArray(payload.workspace_roots) ? payload.workspace_roots.find((root) => typeof root === "string" && root.length > 0) : null;
+  const cwd = process.env.CURSOR_PROJECT_DIR || payload.cwd || workspaceRoot || process.cwd();
+  const projectRoot = resolveProjectRoot(cwd);
+  const eventName = String(payload.hook_event_name || "").toLowerCase();
 
-  if (!text || !String(text).trim()) {
-    logDebug("skipped empty response text", target);
+  if (eventName === "afterfileedit" || eventName === "posttooluse") {
+    const files = filterTrackableFiles(extractEditedFilesFromHookPayload(payload, cwd), cwd, (message) => logDebug(message, target));
+
+    if (files.length > 0) {
+      rememberTurnFiles(payload, files, cwd);
+    }
+
+    logDebug(`recorded edit event=${eventName} files=${files.length}`, target);
     writeHookResponse();
     return;
   }
 
-  const workspaceRoot = Array.isArray(payload.workspace_roots) ? payload.workspace_roots.find((root) => typeof root === "string" && root.length > 0) : null;
-  const cwd = process.env.CURSOR_PROJECT_DIR || workspaceRoot || process.cwd();
-  const projectRoot = resolveProjectRoot(cwd);
-  const transcriptFiles = extractFilesFromTranscript(payload.transcript_path, cwd);
-  const extractedFiles = transcriptFiles.length > 0 ? transcriptFiles : extractFiles(text, cwd);
-  const files = filterTrackableFiles(extractedFiles, cwd, (message) => logDebug(message, target));
+  if (eventName && eventName !== "afteragentresponse" && eventName !== "stop") {
+    logDebug(`skipped unsupported hook event=${eventName}`, target);
+    writeHookResponse();
+    return;
+  }
+
+  const files = filterTrackableFiles(readTurnFiles(payload, cwd), cwd, (message) => logDebug(message, target));
   const signature = buildSignature(files, cwd);
 
   if (!shouldSendHeartbeat(signature)) {
     logDebug("skipped heartbeat due to local rate limit", target);
+    clearTurnFiles(payload, cwd);
     writeHookResponse();
     return;
   }
 
   if (target === "windows") {
-    logDebug(`project root=${projectRoot} file source=${transcriptFiles.length > 0 ? "transcript" : "message"} extracted files=${files.length}`, target);
+    logDebug(`project root=${projectRoot} tracked edited files=${files.length}`, target);
     let sent = false;
 
     if (files.length > 0) {
@@ -944,10 +1024,11 @@ async function runHook(target) {
     if (sent) {
       updateLastHeartbeat(signature);
     }
+    clearTurnFiles(payload, cwd);
     return;
   }
 
-  logDebug(`project root=${projectRoot} file source=${transcriptFiles.length > 0 ? "transcript" : "message"} extracted files=${files.length}`, target);
+  logDebug(`project root=${projectRoot} tracked edited files=${files.length}`, target);
   let sent = false;
 
   if (files.length > 0) {
@@ -959,6 +1040,7 @@ async function runHook(target) {
   if (sent) {
     updateLastHeartbeat(signature);
   }
+  clearTurnFiles(payload, cwd);
   writeHookResponse();
 }
 
@@ -970,16 +1052,27 @@ function writeHookConfig(filePath, hookEntry, matcher) {
     fs.writeFileSync(`${filePath}.bak`, `${JSON.stringify(existing, null, 2)}\n`);
   }
 
-  const hooks = Array.isArray(config.hooks?.afterAgentResponse)
-    ? config.hooks.afterAgentResponse.filter((entry) => !matcher(entry))
-    : [];
-  hooks.push(hookEntry);
+  const nextHooks = { ...(config.hooks || {}) };
+
+  for (const eventName of ["afterAgentResponse", "afterFileEdit", "postToolUse"]) {
+    nextHooks[eventName] = removeOurHookEntries(nextHooks[eventName], matcher);
+  }
+
+  nextHooks.afterAgentResponse = [
+    ...(nextHooks.afterAgentResponse || []),
+    hookEntry,
+  ];
+  nextHooks.afterFileEdit = [
+    ...(nextHooks.afterFileEdit || []),
+    hookEntry,
+  ];
+  nextHooks.postToolUse = [
+    ...(nextHooks.postToolUse || []),
+    hookEntry,
+  ];
 
   config.version = 1;
-  config.hooks = {
-    ...(config.hooks || {}),
-    afterAgentResponse: hooks,
-  };
+  config.hooks = nextHooks;
 
   writeJson(filePath, config);
 }
@@ -987,17 +1080,37 @@ function writeHookConfig(filePath, hookEntry, matcher) {
 function removeHookConfig(filePath, matcher) {
   const existing = readJsonSafe(filePath);
 
-  if (!existing?.hooks?.afterAgentResponse) {
+  if (!existing?.hooks) {
     return false;
   }
 
-  existing.hooks.afterAgentResponse = existing.hooks.afterAgentResponse.filter((entry) => !matcher(entry));
+  let changed = false;
+
+  for (const eventName of ["afterAgentResponse", "afterFileEdit", "postToolUse"]) {
+    if (!Array.isArray(existing.hooks[eventName])) {
+      continue;
+    }
+
+    const filtered = existing.hooks[eventName].filter((entry) => !matcher(entry));
+    changed ||= filtered.length !== existing.hooks[eventName].length;
+
+    if (filtered.length > 0) {
+      existing.hooks[eventName] = filtered;
+    } else {
+      delete existing.hooks[eventName];
+    }
+  }
+
+  if (!changed) {
+    return false;
+  }
+
   writeJson(filePath, existing);
   return true;
 }
 
 function install(options = {}) {
-  const paths = getPaths();
+  const paths = getPaths(options);
 
   if (!options.skipChecks) {
     validateSetup(paths);
@@ -1058,6 +1171,8 @@ function status() {
     installedCommand: primaryCommand,
     installedWslCommand: paths.runtime === "windows" ? null : primaryCommand,
     installedWindowsCommand: windowsConfig?.hooks?.afterAgentResponse?.[0]?.command || null,
+    installedAfterFileEditCommand: primaryConfig?.hooks?.afterFileEdit?.[0]?.command || null,
+    installedPostToolUseCommand: primaryConfig?.hooks?.postToolUse?.[0]?.command || null,
   }, null, 2));
 }
 
@@ -1144,8 +1259,10 @@ module.exports = {
   resolveRuntimePaths,
   toHeartbeatPath,
   validateSetup,
+  install,
   parseOptions,
   filterTrackableFiles,
   isOurWslHookEntry,
   isOurWindowsHookEntry,
+  extractEditedFilesFromHookPayload,
 };

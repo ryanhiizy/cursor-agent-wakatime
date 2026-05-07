@@ -147,3 +147,67 @@ test("filterTrackableFiles keeps only existing files inside the project", () => 
     { path: sourceFile, isWrite: true },
   ]);
 });
+
+test("extractEditedFilesFromHookPayload captures afterFileEdit paths", () => {
+  const cwd = path.join(os.tmpdir(), "cursor-wakatime-after-file-edit-project");
+  const sourceFile = path.join(cwd, "src", "cli.js");
+
+  assert.deepEqual(cli.extractEditedFilesFromHookPayload({
+    hook_event_name: "afterFileEdit",
+    file_path: "src/cli.js",
+  }, cwd), [
+    { path: sourceFile, isWrite: true },
+  ]);
+});
+
+test("extractEditedFilesFromHookPayload only accepts write postToolUse tools", () => {
+  const cwd = path.join(os.tmpdir(), "cursor-wakatime-post-tool-use-project");
+  const sourceFile = path.join(cwd, "src", "cli.js");
+
+  assert.deepEqual(cli.extractEditedFilesFromHookPayload({
+    hook_event_name: "postToolUse",
+    tool_name: "Edit",
+    tool_input: { file_path: "src/cli.js" },
+  }, cwd), [
+    { path: sourceFile, isWrite: true },
+  ]);
+
+  assert.deepEqual(cli.extractEditedFilesFromHookPayload({
+    hook_event_name: "postToolUse",
+    tool_name: "Read",
+    tool_input: { file_path: "src/cli.js" },
+  }, cwd), []);
+});
+
+test("install writes response and structured edit hooks", () => {
+  const home = path.join(os.tmpdir(), "cursor-wakatime-install-home");
+  const wakatimeCli = path.join(home, ".wakatime", "wakatime-cli");
+  const wakatimeConfig = path.join(home, ".wakatime.cfg");
+  const cursorHooks = path.join(home, ".cursor", "hooks.json");
+
+  fs.mkdirSync(path.dirname(wakatimeCli), { recursive: true });
+  fs.writeFileSync(wakatimeCli, "");
+  fs.writeFileSync(wakatimeConfig, "");
+
+  const originalLog = console.log;
+  console.log = () => {};
+
+  try {
+    cli.install({
+      homeDir: home,
+      cursorHooks,
+      wakatimeCli,
+      wakatimeConfig,
+      platform: "darwin",
+    });
+  } finally {
+    console.log = originalLog;
+  }
+
+  const hooks = JSON.parse(fs.readFileSync(cursorHooks, "utf8")).hooks;
+
+  assert.equal(hooks.afterAgentResponse.length, 1);
+  assert.equal(hooks.afterFileEdit.length, 1);
+  assert.equal(hooks.postToolUse.length, 1);
+  assert.equal(cli.isOurWslHookEntry(hooks.afterAgentResponse[0]), true);
+});
