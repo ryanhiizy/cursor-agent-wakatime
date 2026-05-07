@@ -215,3 +215,34 @@ test("install writes response and structured edit hooks", () => {
   assert.equal(hooks.postToolUse.length, 1);
   assert.equal(cli.isOurWslHookEntry(hooks.afterAgentResponse[0]), true);
 });
+
+test("install writes hooks even when setup validation warns", () => {
+  const home = path.join(os.tmpdir(), "cursor-wakatime-install-warning-home");
+  const cursorHooks = path.join(home, ".cursor", "hooks.json");
+  const originalLog = console.log;
+  const originalWarn = console.warn;
+  const warnings = [];
+
+  console.log = () => {};
+  console.warn = (message) => warnings.push(message);
+
+  try {
+    cli.install({
+      homeDir: home,
+      cursorHooks,
+      wakatimeCli: path.join(home, ".wakatime", "missing-cli"),
+      wakatimeConfig: path.join(home, ".wakatime.cfg"),
+      platform: "darwin",
+    });
+  } finally {
+    console.log = originalLog;
+    console.warn = originalWarn;
+  }
+
+  const hooks = JSON.parse(fs.readFileSync(cursorHooks, "utf8")).hooks;
+
+  assert.match(warnings.join("\n"), /Setup check failed/);
+  assert.equal(hooks.afterAgentResponse.length, 1);
+  assert.equal(hooks.afterFileEdit.length, 1);
+  assert.equal(hooks.postToolUse.length, 1);
+});

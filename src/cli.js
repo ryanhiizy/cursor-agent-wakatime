@@ -633,6 +633,15 @@ function validateSetup(paths) {
   }
 }
 
+function warnOnInvalidSetup(paths) {
+  try {
+    validateSetup(paths);
+  } catch (error) {
+    console.warn(`Warning: ${error.message}`);
+    console.warn("Installed hooks anyway. Run `cursor-agent-wakatime doctor` for setup details.");
+  }
+}
+
 function getSetupChecks(paths) {
   return {
     cursorHooksExists: fs.existsSync(paths.cursorHooks),
@@ -1121,7 +1130,7 @@ function install(options = {}) {
   const paths = getPaths(options);
 
   if (!options.skipChecks) {
-    validateSetup(paths);
+    warnOnInvalidSetup(paths);
   }
 
   if (paths.runtime === "windows") {
@@ -1267,6 +1276,7 @@ module.exports = {
   resolveRuntimePaths,
   toHeartbeatPath,
   validateSetup,
+  warnOnInvalidSetup,
   install,
   parseOptions,
   toReadableHostPath,
