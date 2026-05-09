@@ -219,6 +219,7 @@ test("install writes response and structured edit hooks", () => {
   const wakatimeConfig = path.join(home, ".wakatime.cfg");
   const cursorHooks = path.join(home, ".cursor", "hooks.json");
 
+  fs.rmSync(home, { recursive: true, force: true });
   fs.mkdirSync(path.dirname(wakatimeCli), { recursive: true });
   fs.writeFileSync(wakatimeCli, "");
   fs.writeFileSync(wakatimeConfig, "");
@@ -239,11 +240,65 @@ test("install writes response and structured edit hooks", () => {
   }
 
   const hooks = JSON.parse(fs.readFileSync(cursorHooks, "utf8")).hooks;
+  const command = hooks.afterAgentResponse[0].command;
+  const configFile = path.join(home, ".wakatime", "cursor-agent-wakatime.config.json");
 
   assert.equal(hooks.afterAgentResponse.length, 1);
   assert.equal(hooks.afterFileEdit.length, 1);
   assert.equal(hooks.postToolUse.length, 1);
   assert.equal(cli.isOurWslHookEntry(hooks.afterAgentResponse[0]), true);
+  assert.match(command, /--state-file/);
+  assert.match(command, /--config-file/);
+  assert.match(command, /--cursor-log/);
+  assert.deepEqual(JSON.parse(fs.readFileSync(configFile, "utf8")), {
+    debug: false,
+    maxFileHeartbeats: 20,
+    canonicalWorktree: true,
+  });
+});
+
+test("wsl install writes explicit Windows hook paths and config", () => {
+  const home = path.join(os.tmpdir(), "cursor-wakatime-wsl-install-home");
+  const windowsHome = path.join(os.tmpdir(), "cursor-wakatime-wsl-install-windows");
+  const cursorHooks = path.join(home, ".cursor", "hooks.json");
+  const cursorWindowsHooks = path.join(windowsHome, ".cursor", "hooks.json");
+
+  fs.rmSync(home, { recursive: true, force: true });
+  fs.rmSync(windowsHome, { recursive: true, force: true });
+
+  const originalLog = console.log;
+  console.log = () => {};
+
+  try {
+    cli.install({
+      homeDir: home,
+      cursorHooks,
+      cursorWindowsHooks,
+      windowsHome: {
+        win: "C:\\Users\\User",
+        wsl: windowsHome,
+      },
+      platform: "linux",
+      isWsl: true,
+      skipChecks: true,
+    });
+  } finally {
+    console.log = originalLog;
+  }
+
+  const windowsHooks = JSON.parse(fs.readFileSync(cursorWindowsHooks, "utf8")).hooks;
+  const windowsCommand = windowsHooks.afterAgentResponse[0].command;
+  const windowsConfigFile = path.join(windowsHome, ".wakatime", "cursor-agent-wakatime.config.json");
+
+  assert.equal(cli.isOurWindowsHookEntry(windowsHooks.afterAgentResponse[0]), true);
+  assert.match(windowsCommand, /--state-file "C:\\Users\\User\\\.wakatime\\cursor-agent-wakatime\.json"/);
+  assert.match(windowsCommand, /--config-file "C:\\Users\\User\\\.wakatime\\cursor-agent-wakatime\.config\.json"/);
+  assert.match(windowsCommand, /--cursor-windows-log "C:\\Users\\User\\\.cursor\\cursor-agent-wakatime\.log"/);
+  assert.deepEqual(JSON.parse(fs.readFileSync(windowsConfigFile, "utf8")), {
+    debug: false,
+    maxFileHeartbeats: 20,
+    canonicalWorktree: true,
+  });
 });
 
 test("install writes hooks even when setup validation warns", () => {
