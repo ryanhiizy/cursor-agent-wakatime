@@ -987,11 +987,9 @@ function readTurnFiles(payload, cwd, state = readState()) {
   return mergeFiles([], [...stateFiles, ...readQueuedTurnFiles(turnKeys)]);
 }
 
-function clearTurnFiles(payload, cwd) {
+function clearTurnFiles(payload, cwd, state = readState()) {
   const turnKeys = getTurnStateKeys(payload, cwd);
   clearQueuedTurnFiles(turnKeys);
-
-  const state = readState();
 
   if (!state.turnFiles || typeof state.turnFiles !== "object") {
     return;
@@ -1317,7 +1315,7 @@ async function runHook(target, options = {}) {
 
   if (!shouldSendHeartbeat(signature, false, state)) {
     logDebug("skipped heartbeat due to local rate limit", target);
-    clearTurnFiles(payload, cwd);
+    clearTurnFiles(payload, cwd, state);
     writeHookResponse();
     return;
   }
@@ -1336,7 +1334,7 @@ async function runHook(target, options = {}) {
     if (sent) {
       updateLastHeartbeat(signature, state);
     }
-    clearTurnFiles(payload, cwd);
+    clearTurnFiles(payload, cwd, state);
     return;
   }
 
@@ -1352,7 +1350,7 @@ async function runHook(target, options = {}) {
   if (sent) {
     updateLastHeartbeat(signature, state);
   }
-  clearTurnFiles(payload, cwd);
+  clearTurnFiles(payload, cwd, state);
   writeHookResponse();
 }
 
