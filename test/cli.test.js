@@ -15,6 +15,9 @@ test("runtime detection covers macos, linux, windows, and wsl", () => {
 
 test("macos runtime uses native Cursor and WakaTime paths", () => {
   const home = path.join(os.tmpdir(), "cursor-wakatime-mac-home");
+  const homebrewCli = ["/opt/homebrew/bin/wakatime-cli", "/usr/local/bin/wakatime-cli"].find((candidate) => fs.existsSync(candidate));
+  const expectedWakatimeCli = homebrewCli || path.join(home, ".wakatime", "wakatime-cli");
+
   const paths = cli.resolveRuntimePaths({
     platform: "darwin",
     homeDir: home,
@@ -23,7 +26,7 @@ test("macos runtime uses native Cursor and WakaTime paths", () => {
   assert.equal(paths.runtime, "macos");
   assert.equal(paths.cursorHooks, path.join(home, ".cursor", "hooks.json"));
   assert.equal(paths.cursorWindowsHooks, null);
-  assert.equal(paths.wakatimeCli, path.join(home, ".wakatime", "wakatime-cli"));
+  assert.equal(paths.wakatimeCli, expectedWakatimeCli);
   assert.equal(paths.wakatimeConfig, path.join(home, ".wakatime.cfg"));
   assert.equal(cli.toHeartbeatPath("/Users/example/project/app.js", paths), "/Users/example/project/app.js");
 });
@@ -40,6 +43,33 @@ test("native linux runtime uses native Cursor and WakaTime paths", () => {
   assert.equal(paths.cursorHooks, path.join(home, ".cursor", "hooks.json"));
   assert.equal(paths.cursorWindowsHooks, null);
   assert.equal(paths.wakatimeConfig, path.join(home, ".wakatime.cfg"));
+});
+
+test("native runtime resolves WakaTime CLI from PATH before platform fallback", () => {
+  const home = path.join(os.tmpdir(), "cursor-wakatime-path-home");
+  const bin = path.join(os.tmpdir(), "cursor-wakatime-path-bin");
+  const wakatimeCli = path.join(bin, "wakatime-cli");
+  const staleWakatimeCli = path.join(home, ".wakatime", "wakatime-cli-darwin-arm64");
+  const previousPath = process.env.PATH;
+
+  fs.mkdirSync(bin, { recursive: true });
+  fs.writeFileSync(wakatimeCli, "#!/bin/sh\n");
+  fs.chmodSync(wakatimeCli, 0o755);
+  fs.mkdirSync(path.dirname(staleWakatimeCli), { recursive: true });
+  fs.writeFileSync(staleWakatimeCli, "");
+  process.env.PATH = bin;
+
+  try {
+    const paths = cli.resolveRuntimePaths({
+      platform: "darwin",
+      homeDir: home,
+      arch: "arm64",
+    });
+
+    assert.equal(paths.wakatimeCli, wakatimeCli);
+  } finally {
+    process.env.PATH = previousPath;
+  }
 });
 
 test("wsl runtime keeps Windows WakaTime paths and installs both Cursor hook files", () => {

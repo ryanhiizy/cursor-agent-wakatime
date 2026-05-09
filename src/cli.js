@@ -392,15 +392,33 @@ function toHeartbeatPath(filePath, paths = getPaths()) {
   return filePath;
 }
 
-function commandExists(command) {
-  const result = spawnSync(process.platform === "win32" ? "where" : "command", process.platform === "win32" ? [command] : ["-v", command], {
-    encoding: "utf8",
-    shell: process.platform !== "win32",
-    stdio: ["ignore", "pipe", "ignore"],
-    windowsHide: true,
-  });
+function findCommand(command) {
+  if (!command) {
+    return null;
+  }
 
-  return result.status === 0 && result.stdout.trim().length > 0;
+  const result = process.platform === "win32"
+    ? spawnSync("where", [command], {
+      encoding: "utf8",
+      stdio: ["ignore", "pipe", "ignore"],
+      windowsHide: true,
+    })
+    : spawnSync("/bin/sh", ["-c", "command -v \"$1\"", "sh", command], {
+      encoding: "utf8",
+      stdio: ["ignore", "pipe", "ignore"],
+      windowsHide: true,
+    });
+
+  if (result.status !== 0) {
+    return null;
+  }
+
+  const resolved = result.stdout.trim().split(/\r?\n/)[0];
+  return resolved || null;
+}
+
+function commandExists(command) {
+  return Boolean(findCommand(command));
 }
 
 function commandOrFileExists(command) {
@@ -424,20 +442,28 @@ function findNativeWakatimeCli(homeDir, options = {}) {
     return process.env.WAKATIME_CLI_PATH;
   }
 
-  const platformName = process.platform === "darwin" ? "darwin" : process.platform;
-  const archNames = process.arch === "x64" ? ["amd64", "x64"] : [process.arch];
-  const candidates = [
+  const globalCandidates = [
+    findCommand("wakatime-cli"),
+    "/opt/homebrew/bin/wakatime-cli",
+    "/usr/local/bin/wakatime-cli",
+  ].filter(Boolean);
+  const globalExisting = globalCandidates.find((candidate) => fs.existsSync(candidate));
+
+  if (globalExisting) {
+    return globalExisting;
+  }
+
+  const platform = options.platform || process.platform;
+  const arch = options.arch || process.arch;
+  const platformName = platform === "darwin" ? "darwin" : platform;
+  const archNames = arch === "x64" ? ["amd64", "x64"] : [arch];
+  const localCandidates = [
     path.join(homeDir, ".wakatime", "wakatime-cli"),
     ...archNames.map((arch) => path.join(homeDir, ".wakatime", `wakatime-cli-${platformName}-${arch}`)),
   ];
+  const localExisting = localCandidates.find((candidate) => fs.existsSync(candidate));
 
-  const existing = candidates.find((candidate) => fs.existsSync(candidate));
-
-  if (existing) {
-    return existing;
-  }
-
-  return commandExists("wakatime-cli") ? "wakatime-cli" : candidates[0];
+  return localExisting || localCandidates[0];
 }
 
 function mergeFileMapEntry(fileMap, filePath, isWrite, cwd) {
