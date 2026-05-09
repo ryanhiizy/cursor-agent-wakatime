@@ -88,8 +88,7 @@ Install creates `~/.wakatime/cursor-agent-wakatime.config.json` with debug loggi
 ```json
 {
   "debug": false,
-  "maxFileHeartbeats": 20,
-  "canonicalWorktree": true
+  "maxFileHeartbeats": 30
 }
 ```
 
@@ -103,11 +102,11 @@ Hooks are optimized for low overhead:
 - `afterAgentResponse` / `stop` does the filesystem checks and sends the WakaTime heartbeat.
 - Config reads, debug logging, filesystem checks, Git worktree lookup, and WakaTime CLI execution are kept off the edit-hook hot path.
 - Debug logging is disabled by default.
-- Up to 20 file heartbeats are sent per completed response by default.
+- Up to 30 file heartbeats are sent per completed response by default.
 
 To adjust file heartbeats per response, set `"maxFileHeartbeats"` in the config file.
 
-Git worktree canonicalization remains enabled by default for matching WakaTime paths across linked worktrees.
+Git worktree canonicalization is always enabled for matching WakaTime paths across linked worktrees.
 
 ## Troubleshooting
 

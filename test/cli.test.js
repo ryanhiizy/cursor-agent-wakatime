@@ -254,8 +254,7 @@ test("install writes response and structured edit hooks", () => {
   assert.match(command, /--cursor-log/);
   assert.deepEqual(JSON.parse(fs.readFileSync(configFile, "utf8")), {
     debug: false,
-    maxFileHeartbeats: 20,
-    canonicalWorktree: true,
+    maxFileHeartbeats: 30,
   });
 });
 
@@ -299,8 +298,7 @@ test("wsl install writes explicit Windows hook paths and config", () => {
   assert.match(windowsCommand, /--cursor-windows-log "C:\\Users\\User\\\.cursor\\cursor-agent-wakatime\.log"/);
   assert.deepEqual(JSON.parse(fs.readFileSync(windowsConfigFile, "utf8")), {
     debug: false,
-    maxFileHeartbeats: 20,
-    canonicalWorktree: true,
+    maxFileHeartbeats: 30,
   });
 });
 
