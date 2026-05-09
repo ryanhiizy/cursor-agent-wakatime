@@ -63,7 +63,7 @@ macOS/native Linux:
 | --- | --- |
 | `~/.cursor/hooks.json` | Cursor hook configuration. |
 | `~/.cursor/cursor-agent-wakatime.log` | Hook debug log, only written when debug logging is enabled. |
-| `~/.wakatime/cursor-agent-wakatime.config.json` | Package config for debug logging and performance options. |
+| `~/.wakatime/cursor-agent-wakatime.config.json` | Package config. |
 | `~/.wakatime/cursor-agent-wakatime.json` | Stores the last heartbeat timestamp/signature so repeated hook runs do not spam duplicate WakaTime heartbeats. |
 | `~/.wakatime/cursor-agent-wakatime-turns/*.jsonl` | Temporary edited-file queue log used to keep edit hooks lightweight. |
 
@@ -73,17 +73,17 @@ Windows Cursor working on a WSL project:
 | --- | --- |
 | `~/.cursor/hooks.json` | WSL Cursor hook configuration. |
 | `~/.cursor/cursor-agent-wakatime.log` | WSL hook debug log, only written when debug logging is enabled. |
-| `~/.wakatime/cursor-agent-wakatime.config.json` | WSL package config for debug logging and performance options. |
+| `~/.wakatime/cursor-agent-wakatime.config.json` | WSL package config. |
 | `/mnt/c/Users/<user>/.cursor/hooks.json` | Windows Cursor hook configuration. |
 | `/mnt/c/Users/<user>/.cursor/cursor-agent-wakatime.log` | Windows hook debug log, only written when debug logging is enabled. |
-| `/mnt/c/Users/<user>/.wakatime/cursor-agent-wakatime.config.json` | Windows package config for debug logging and performance options. |
+| `/mnt/c/Users/<user>/.wakatime/cursor-agent-wakatime.config.json` | Windows package config. |
 | `/mnt/c/Users/<user>/.wakatime/cursor-agent-wakatime.json` | Stores the last heartbeat timestamp/signature so repeated hook runs do not spam duplicate WakaTime heartbeats. |
 | `~/.wakatime/cursor-agent-wakatime-turns/events.jsonl` | WSL temporary edited-file queue log used to keep edit hooks lightweight without writing through `/mnt/c` on every edit. |
 | `/mnt/c/Users/<user>/.wakatime/cursor-agent-wakatime-turns/events.jsonl` | Windows temporary edited-file queue log for the Windows hook. |
 
 ## Config
 
-Install creates `~/.wakatime/cursor-agent-wakatime.config.json` with debug logging off by default:
+Install creates the config file at `~/.wakatime/cursor-agent-wakatime.config.json`:
 
 ```json
 {
@@ -92,21 +92,8 @@ Install creates `~/.wakatime/cursor-agent-wakatime.config.json` with debug loggi
 }
 ```
 
-Set `"debug": true` to write hook debug logs. Keep it off for the lowest hook overhead.
-
-## Performance
-
-Hooks are optimized for low overhead:
-
-- `afterFileEdit` and `postToolUse` only parse the hook payload and record candidate edited paths to a small local queue log.
-- `afterAgentResponse` / `stop` does the filesystem checks and sends the WakaTime heartbeat.
-- Config reads, debug logging, filesystem checks, Git worktree lookup, and WakaTime CLI execution are kept off the edit-hook hot path.
-- Debug logging is disabled by default.
-- Up to 30 file heartbeats are sent per completed response by default.
-
-To adjust file heartbeats per response, set `"maxFileHeartbeats"` in the config file.
-
-Git worktree canonicalization is always enabled for matching WakaTime paths across linked worktrees.
+- `debug`: set to `true` to write hook debug logs. It is `false` by default.
+- `maxFileHeartbeats`: caps how many edited-file heartbeats are sent per completed response. The default is `30`.
 
 ## Troubleshooting
 
