@@ -591,6 +591,7 @@ function resolveRuntimePaths(options = {}) {
       configFile: options.configFile || path.join(homeDir, ".wakatime", CONFIG_FILE_NAME),
       wakatimeLog: options.wakatimeLog || path.join(homeDir, ".wakatime", "wakatime.log"),
       stateFile: options.stateFile || path.join(homeDir, ".wakatime", "cursor-agent-wakatime.json"),
+      queueFile: options.queueFile || path.join(homeDir, ".wakatime", "cursor-agent-wakatime-turns", "events.jsonl"),
       cursorHooks,
       cursorLog,
       cursorWslHooks: cursorHooks,
@@ -638,6 +639,9 @@ function resolveRuntimePaths(options = {}) {
     stateFile: options.stateFile || (isWindowsRuntime
       ? path.win32.join(windowsHome.win, ".wakatime", "cursor-agent-wakatime.json")
       : path.posix.join(windowsHome.wsl, ".wakatime", "cursor-agent-wakatime.json")),
+    queueFile: options.queueFile || (isWindowsRuntime
+      ? path.win32.join(windowsHome.win, ".wakatime", "cursor-agent-wakatime-turns", "events.jsonl")
+      : path.posix.join(homeDir, ".wakatime", "cursor-agent-wakatime-turns", "events.jsonl")),
     cursorHooks: options.cursorHooks || cursorHooks,
     cursorLog: options.cursorLog || cursorLog,
     cursorWslHooks: options.cursorHooks || cursorHooks,
@@ -674,6 +678,18 @@ function getStateFilePath(options = {}) {
   }
 
   return getPaths(options).stateFile;
+}
+
+function getQueueFilePath(options = {}) {
+  if (options.queueFile) {
+    return options.queueFile;
+  }
+
+  if (activeOptions.queueFile) {
+    return activeOptions.queueFile;
+  }
+
+  return getPaths(options).queueFile || path.join(path.dirname(getStateFilePath(options)), "cursor-agent-wakatime-turns", "events.jsonl");
 }
 
 function readConfig(options = {}) {
@@ -841,7 +857,7 @@ function mergeFiles(existingFiles, newFiles) {
 }
 
 function getTurnFilesPath() {
-  return path.join(path.dirname(getStateFilePath()), "cursor-agent-wakatime-turns", "events.jsonl");
+  return getQueueFilePath();
 }
 
 function pruneQueuedTurnFiles() {
@@ -1137,6 +1153,8 @@ function buildWslHookEntry(paths = getPaths()) {
       "hook-wsl",
       "--state-file",
       quotePosixShellArg(paths.stateFile),
+      "--queue-file",
+      quotePosixShellArg(paths.queueFile),
       "--config-file",
       quotePosixShellArg(paths.configFile),
       "--cursor-log",
@@ -1150,6 +1168,7 @@ function getWindowsHookRuntimePaths(paths = getPaths()) {
   if (!paths.windowsHome?.win) {
     return {
       stateFile: paths.stateFile,
+      queueFile: paths.queueFile,
       configFile: paths.configFile,
       cursorLog: paths.cursorWindowsLog || paths.cursorLog,
     };
@@ -1157,6 +1176,7 @@ function getWindowsHookRuntimePaths(paths = getPaths()) {
 
   return {
     stateFile: path.win32.join(paths.windowsHome.win, ".wakatime", "cursor-agent-wakatime.json"),
+    queueFile: path.win32.join(paths.windowsHome.win, ".wakatime", "cursor-agent-wakatime-turns", "events.jsonl"),
     configFile: path.win32.join(paths.windowsHome.win, ".wakatime", CONFIG_FILE_NAME),
     cursorLog: path.win32.join(paths.windowsHome.win, ".cursor", "cursor-agent-wakatime.log"),
   };
@@ -1174,6 +1194,8 @@ function buildWindowsHookEntry(paths = getPaths()) {
       "hook-windows",
       "--state-file",
       quoteWindowsShellArg(runtimePaths.stateFile),
+      "--queue-file",
+      quoteWindowsShellArg(runtimePaths.queueFile),
       "--config-file",
       quoteWindowsShellArg(runtimePaths.configFile),
       "--cursor-windows-log",
@@ -1216,6 +1238,11 @@ function parseOptions(args) {
       index += 1;
     } else if (arg.startsWith("--state-file=")) {
       options.stateFile = arg.slice("--state-file=".length);
+    } else if (arg === "--queue-file") {
+      options.queueFile = args[index + 1];
+      index += 1;
+    } else if (arg.startsWith("--queue-file=")) {
+      options.queueFile = arg.slice("--queue-file=".length);
     } else if (arg === "--config-file") {
       options.configFile = args[index + 1];
       index += 1;
@@ -1242,10 +1269,8 @@ function parseOptions(args) {
 async function runHook(target, options = {}) {
   activeOptions = options;
   const rawInput = await readStdin();
-  logDebug(`received input bytes=${rawInput.length}`, target);
 
   if (!rawInput.trim()) {
-    logDebug("skipped empty input", target);
     writeHookResponse();
     return;
   }
@@ -1255,7 +1280,6 @@ async function runHook(target, options = {}) {
   try {
     payload = JSON.parse(rawInput);
   } catch (error) {
-    logDebug(`invalid hook payload=${error.message}`, target);
     writeHookResponse();
     return;
   }
@@ -1271,10 +1295,11 @@ async function runHook(target, options = {}) {
       rememberTurnFiles(payload, files, cwd);
     }
 
-    logDebug(`recorded edit event=${eventName} files=${files.length}`, target);
     writeHookResponse();
     return;
   }
+
+  logDebug(`received input bytes=${rawInput.length}`, target);
 
   if (eventName && eventName !== "afteragentresponse" && eventName !== "stop") {
     logDebug(`skipped unsupported hook event=${eventName}`, target);
@@ -1462,6 +1487,7 @@ function status(options = {}) {
     cursorWindowsHooks: paths.cursorWindowsHooks,
     cursorWindowsLog: paths.cursorWindowsLog,
     stateFile: paths.stateFile,
+    queueFile: paths.queueFile,
     configFile: paths.configFile,
     config: readConfig({ configFile: paths.configFile }),
     wakatimeCli: paths.wakatimeCli,
@@ -1487,6 +1513,7 @@ function doctor(options = {}) {
     cursorWindowsHooks: paths.cursorWindowsHooks,
     wakatimeCli: paths.wakatimeCli,
     wakatimeConfig: paths.wakatimeConfig,
+    queueFile: paths.queueFile,
     configFile: paths.configFile,
     config: readConfig({ configFile: paths.configFile }),
     checks,

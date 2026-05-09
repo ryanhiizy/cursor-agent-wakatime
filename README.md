@@ -78,7 +78,8 @@ Windows Cursor working on a WSL project:
 | `/mnt/c/Users/<user>/.cursor/cursor-agent-wakatime.log` | Windows hook debug log, only written when debug logging is enabled. |
 | `/mnt/c/Users/<user>/.wakatime/cursor-agent-wakatime.config.json` | Windows package config for debug logging and performance options. |
 | `/mnt/c/Users/<user>/.wakatime/cursor-agent-wakatime.json` | Stores the last heartbeat timestamp/signature so repeated hook runs do not spam duplicate WakaTime heartbeats. |
-| `/mnt/c/Users/<user>/.wakatime/cursor-agent-wakatime-turns/*.jsonl` | Temporary edited-file queue log used to keep edit hooks lightweight. |
+| `~/.wakatime/cursor-agent-wakatime-turns/events.jsonl` | WSL temporary edited-file queue log used to keep edit hooks lightweight without writing through `/mnt/c` on every edit. |
+| `/mnt/c/Users/<user>/.wakatime/cursor-agent-wakatime-turns/events.jsonl` | Windows temporary edited-file queue log for the Windows hook. |
 
 ## Config
 
@@ -98,8 +99,9 @@ Set `"debug": true` to write hook debug logs. Keep it off for the lowest hook ov
 
 Hooks are optimized for low overhead:
 
-- `afterFileEdit` and `postToolUse` only record candidate edited paths to a small queue log.
+- `afterFileEdit` and `postToolUse` only parse the hook payload and record candidate edited paths to a small local queue log.
 - `afterAgentResponse` / `stop` does the filesystem checks and sends the WakaTime heartbeat.
+- Config reads, debug logging, filesystem checks, Git worktree lookup, and WakaTime CLI execution are kept off the edit-hook hot path.
 - Debug logging is disabled by default.
 - Up to 20 file heartbeats are sent per completed response by default.
 

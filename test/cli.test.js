@@ -90,6 +90,7 @@ test("wsl runtime keeps Windows WakaTime paths and installs both Cursor hook fil
   assert.equal(paths.cursorWindowsHooks, "/mnt/c/Users/User/.cursor/hooks.json");
   assert.equal(paths.wakatimeCli, "/mnt/c/Users/User/.wakatime/wakatime-cli-windows-amd64.exe");
   assert.equal(paths.wakatimeConfig, "C:\\Users\\User\\.wakatime.cfg");
+  assert.equal(paths.queueFile, path.join(home, ".wakatime", "cursor-agent-wakatime-turns", "events.jsonl"));
   assert.equal(cli.toHeartbeatPath("/home/user/project/app.js", paths), "\\\\wsl.localhost\\Ubuntu\\home\\user\\project\\app.js");
 });
 
@@ -248,6 +249,7 @@ test("install writes response and structured edit hooks", () => {
   assert.equal(hooks.postToolUse.length, 1);
   assert.equal(cli.isOurWslHookEntry(hooks.afterAgentResponse[0]), true);
   assert.match(command, /--state-file/);
+  assert.match(command, /--queue-file/);
   assert.match(command, /--config-file/);
   assert.match(command, /--cursor-log/);
   assert.deepEqual(JSON.parse(fs.readFileSync(configFile, "utf8")), {
@@ -292,6 +294,7 @@ test("wsl install writes explicit Windows hook paths and config", () => {
 
   assert.equal(cli.isOurWindowsHookEntry(windowsHooks.afterAgentResponse[0]), true);
   assert.match(windowsCommand, /--state-file "C:\\Users\\User\\\.wakatime\\cursor-agent-wakatime\.json"/);
+  assert.match(windowsCommand, /--queue-file "C:\\Users\\User\\\.wakatime\\cursor-agent-wakatime-turns\\events\.jsonl"/);
   assert.match(windowsCommand, /--config-file "C:\\Users\\User\\\.wakatime\\cursor-agent-wakatime\.config\.json"/);
   assert.match(windowsCommand, /--cursor-windows-log "C:\\Users\\User\\\.cursor\\cursor-agent-wakatime\.log"/);
   assert.deepEqual(JSON.parse(fs.readFileSync(windowsConfigFile, "utf8")), {
