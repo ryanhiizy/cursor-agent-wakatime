@@ -997,7 +997,7 @@ function clearTurnFiles(payload, cwd, state = readState()) {
 
   const turnFiles = { ...state.turnFiles };
 
-  for (const turnKey of getTurnStateKeys(payload, cwd)) {
+  for (const turnKey of turnKeys) {
     delete turnFiles[turnKey];
   }
 
@@ -1025,9 +1025,7 @@ function buildWakatimeLaunch(wakatimeCli) {
   };
 }
 
-function sendHeartbeat(params, target) {
-  const paths = getPaths();
-
+function sendHeartbeat(params, target, paths = getPaths()) {
   if (!commandOrFileExists(paths.wakatimeCli)) {
     logDebug(`missing wakatime cli at ${paths.wakatimeCli}`, target);
     return { ok: false, reason: "missing_wakatime_cli" };
@@ -1091,13 +1089,14 @@ function sendHeartbeat(params, target) {
 }
 
 function sendProjectHeartbeat(cwd, target, projectRoot = resolveProjectRoot(cwd)) {
-  const heartbeatPath = toHeartbeatPath(projectRoot);
+  const paths = getPaths();
+  const heartbeatPath = toHeartbeatPath(projectRoot, paths);
   const project = basenameAny(projectRoot);
   return sendHeartbeat({
     entity: heartbeatPath,
     entityType: "app",
     project,
-  }, target);
+  }, target, paths);
 }
 
 function getMaxFileHeartbeats() {
@@ -1108,7 +1107,8 @@ function getMaxFileHeartbeats() {
 }
 
 function sendFileHeartbeats(files, cwd, target, projectRoot = resolveProjectRoot(cwd)) {
-  const heartbeatProjectFolder = toHeartbeatPath(projectRoot);
+  const paths = getPaths();
+  const heartbeatProjectFolder = toHeartbeatPath(projectRoot, paths);
   const filesToSend = files.slice(0, getMaxFileHeartbeats());
   let sentCount = 0;
 
@@ -1117,14 +1117,14 @@ function sendFileHeartbeats(files, cwd, target, projectRoot = resolveProjectRoot
   }
 
   for (const file of filesToSend) {
-    const heartbeatPath = toHeartbeatPath(file.path);
+    const heartbeatPath = toHeartbeatPath(file.path, paths);
     logDebug(`sending file heartbeat path=${heartbeatPath} isWrite=${file.isWrite}`, target);
     const result = sendHeartbeat({
       entity: heartbeatPath,
       entityType: "file",
       projectFolder: heartbeatProjectFolder,
       isWrite: file.isWrite,
-    }, target);
+    }, target, paths);
 
     if (result.ok) {
       sentCount += 1;
@@ -1308,10 +1308,20 @@ async function runHook(target, options = {}) {
   }
 
   const state = readState();
+  const rememberedFiles = readTurnFiles(payload, cwd, state);
+  const appSignature = buildSignature([], cwd);
+
+  if (rememberedFiles.length === 0 && !shouldSendHeartbeat(appSignature, false, state)) {
+    logDebug("skipped heartbeat due to local rate limit", target);
+    clearTurnFiles(payload, cwd, state);
+    writeHookResponse();
+    return;
+  }
+
   const rawProjectRoot = resolveProjectRootRaw(cwd);
   const projectRoot = getPrimaryWorktreeRoot(rawProjectRoot);
-  const files = filterTrackableFiles(readTurnFiles(payload, cwd, state), cwd, (message) => logDebug(message, target), projectRoot, rawProjectRoot);
-  const signature = buildSignature(files, cwd);
+  const files = filterTrackableFiles(rememberedFiles, cwd, (message) => logDebug(message, target), projectRoot, rawProjectRoot);
+  const signature = files.length === 0 ? appSignature : buildSignature(files, cwd);
 
   if (!shouldSendHeartbeat(signature, false, state)) {
     logDebug("skipped heartbeat due to local rate limit", target);

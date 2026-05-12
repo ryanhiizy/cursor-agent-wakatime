@@ -1,6 +1,6 @@
 {
   "name": "cursor-agent-wakatime",
-  "version": "0.1.8",
+  "version": "0.1.9",
   "description": "WakaTime heartbeats for Cursor Agent hooks.",
   "main": "./src/cli.js",
   "bin": {
