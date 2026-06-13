@@ -8,6 +8,7 @@ const VERSION = packageJson.version;
 const ROOT_DIR = path.resolve(__dirname, "..");
 const BIN_PATH = path.join(ROOT_DIR, "bin", "cursor-agent-wakatime.js");
 const HOOK_COMMAND_MARKER = "cursor-agent-wakatime";
+const DEFAULT_WAKATIME_EDITOR = "cursor-agent";
 const WINDOWS_ABSOLUTE_PATH_PATTERN = /^[A-Za-z]:[\\/]/;
 const DEFAULT_MAX_FILE_HEARTBEATS_PER_HOOK = 30;
 const MAX_TRACKED_TURNS = 100;
@@ -1025,6 +1026,17 @@ function buildWakatimeLaunch(wakatimeCli) {
   };
 }
 
+function buildPluginString(options = {}) {
+  const editorName = options.editorName || process.env.CURSOR_AGENT_WAKATIME_EDITOR || DEFAULT_WAKATIME_EDITOR;
+  const pluginName = options.pluginName || process.env.CURSOR_AGENT_WAKATIME_PLUGIN || "";
+
+  if (pluginName) {
+    return `${editorName}/1.0.0 ${pluginName}/${VERSION}`;
+  }
+
+  return `${editorName}/${VERSION}`;
+}
+
 function sendHeartbeat(params, target, paths = getPaths()) {
   if (!commandOrFileExists(paths.wakatimeCli)) {
     logDebug(`missing wakatime cli at ${paths.wakatimeCli}`, target);
@@ -1039,7 +1051,7 @@ function sendHeartbeat(params, target, paths = getPaths()) {
     "--category",
     params.category || "ai coding",
     "--plugin",
-    `cursor/1.0.0 cursor-agent-wakatime/${VERSION}`,
+    buildPluginString(),
     "--config",
     paths.wakatimeConfig,
     "--log-file",
@@ -1502,6 +1514,7 @@ function status(options = {}) {
     config: readConfig({ configFile: paths.configFile }),
     wakatimeCli: paths.wakatimeCli,
     wakatimeConfig: paths.wakatimeConfig,
+    wakatimePlugin: buildPluginString(),
     checks: {
       ...getSetupChecks(paths),
     },
@@ -1526,6 +1539,7 @@ function doctor(options = {}) {
     queueFile: paths.queueFile,
     configFile: paths.configFile,
     config: readConfig({ configFile: paths.configFile }),
+    wakatimePlugin: buildPluginString(),
     checks,
   }, null, 2));
 
@@ -1601,6 +1615,7 @@ module.exports = {
   validateSetup,
   warnOnInvalidSetup,
   install,
+  buildPluginString,
   parseOptions,
   toReadableHostPath,
   filterTrackableFiles,

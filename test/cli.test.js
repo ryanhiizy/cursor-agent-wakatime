@@ -160,6 +160,21 @@ test("parseOptions keeps command flags out of positional arguments", () => {
   assert.deepEqual(options.rest, ["extra"]);
 });
 
+test("buildPluginString uses the WakaTime Cursor Agent identity", () => {
+  const packageJson = require("../package.json");
+
+  assert.equal(cli.buildPluginString(), `cursor-agent/${packageJson.version}`);
+});
+
+test("buildPluginString supports explicit identity overrides", () => {
+  const packageJson = require("../package.json");
+
+  assert.equal(cli.buildPluginString({
+    editorName: "cursor",
+    pluginName: "cursor-agent-wakatime",
+  }), `cursor/1.0.0 cursor-agent-wakatime/${packageJson.version}`);
+});
+
 test("filterTrackableFiles keeps only existing files inside the project", () => {
   const cwd = path.join(os.tmpdir(), "cursor-wakatime-filter-project");
   const sourceFile = path.join(cwd, "src", "cli.js");
